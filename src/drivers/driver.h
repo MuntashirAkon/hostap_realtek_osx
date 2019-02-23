@@ -927,6 +927,43 @@ struct wpa_driver_associate_params {
 	 */
 	enum mfp_options mgmt_frame_protection;
 
+    /**
+     * ft_ies - IEEE 802.11r / FT information elements
+     * If the supplicant is using IEEE 802.11r (FT) and has the needed keys
+     * for fast transition, this parameter is set to include the IEs that
+     * are to be sent in the next FT Authentication Request message.
+     * update_ft_ies() handler is called to update the IEs for further
+     * FT messages in the sequence.
+     *
+     * The driver should use these IEs only if the target AP is advertising
+     * the same mobility domain as the one included in the MDIE here.
+     *
+     * In ap_scan=2 mode, the driver can use these IEs when moving to a new
+     * AP after the initial association. These IEs can only be used if the
+     * target AP is advertising support for FT and is using the same MDIE
+     * and SSID as the current AP.
+     *
+     * The driver is responsible for reporting the FT IEs received from the
+     * AP's response using wpa_supplicant_event() with EVENT_FT_RESPONSE
+     * type. update_ft_ies() handler will then be called with the FT IEs to
+     * include in the next frame in the authentication sequence.
+     */
+    const u8 *ft_ies;
+    
+    /**
+     * ft_ies_len - Length of ft_ies in bytes
+     */
+    size_t ft_ies_len;
+    
+    /**
+     * ft_md - FT Mobility domain (6 octets) (also included inside ft_ies)
+     *
+     * This value is provided to allow the driver interface easier access
+     * to the current mobility domain. This value is set to %NULL if no
+     * mobility domain is currently active.
+     */
+    const u8 *ft_md;
+    
 	/**
 	 * passphrase - RSN passphrase for PSK
 	 *
@@ -5659,6 +5696,10 @@ extern const struct wpa_driver_ops wpa_driver_macsec_linux_ops;
 /* driver_roboswitch.c */
 extern const struct wpa_driver_ops wpa_driver_roboswitch_ops;
 #endif /* CONFIG_DRIVER_ROBOSWITCH */
+#ifdef CONFIG_DRIVER_OSX
+/* driver_osx_other.c */
+extern const struct wpa_driver_ops wpa_driver_osx_other_ops;
+#endif /* CONFIG_DRIVER_OSX */
 #ifdef CONFIG_DRIVER_ATHEROS
 /* driver_atheros.c */
 extern const struct wpa_driver_ops wpa_driver_atheros_ops;

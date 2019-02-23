@@ -43,6 +43,9 @@ const struct wpa_driver_ops *const wpa_drivers[] =
 #ifdef CONFIG_DRIVER_ROBOSWITCH
 	&wpa_driver_roboswitch_ops,
 #endif /* CONFIG_DRIVER_ROBOSWITCH */
+#ifdef CONFIG_DRIVER_OSX
+    &wpa_driver_osx_other_ops,
+#endif /* CONFIG_DRIVER_OSX */
 #ifdef CONFIG_DRIVER_ATHEROS
 	&wpa_driver_atheros_ops,
 #endif /* CONFIG_DRIVER_ATHEROS */
