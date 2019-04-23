@@ -36,6 +36,7 @@
 #include "rsn_supp/preauth.h"
 #include "rsn_supp/pmksa_cache.h"
 #include "common/wpa_ctrl.h"
+#include "common/ieee802_11_common.h"
 #include "common/ieee802_11_defs.h"
 #include "common/hw_features_common.h"
 #include "common/gas_server.h"
@@ -961,7 +962,7 @@ void wpa_supplicant_set_state(struct wpa_supplicant *wpa_s,
 		wpa_supplicant_stop_bgscan(wpa_s);
 #endif /* CONFIG_BGSCAN */
 
-	if (state == WPA_AUTHENTICATING)
+	if (state > WPA_SCANNING)
 		wpa_supplicant_stop_autoscan(wpa_s);
 
 	if (state == WPA_DISCONNECTED || state == WPA_INACTIVE)
@@ -2521,6 +2522,9 @@ static u8 * wpas_populate_assoc_ies(
 #ifdef CONFIG_MBO
 	const u8 *mbo_ie;
 #endif
+#ifdef CONFIG_SAE
+	int sae_pmksa_cached = 0;
+#endif /* CONFIG_SAE */
 #ifdef CONFIG_FILS
 	const u8 *realm, *username, *rrk;
 	size_t realm_len, username_len, rrk_len;
@@ -2558,8 +2562,12 @@ static u8 * wpas_populate_assoc_ies(
 #endif /* CONFIG_FILS */
 		if (pmksa_cache_set_current(wpa_s->wpa, NULL, bss->bssid,
 					    ssid, try_opportunistic,
-					    cache_id, 0) == 0)
+					    cache_id, 0) == 0) {
 			eapol_sm_notify_pmkid_attempt(wpa_s->eapol);
+#ifdef CONFIG_SAE
+			sae_pmksa_cached = 1;
+#endif /* CONFIG_SAE */
+		}
 		wpa_ie_len = max_wpa_ie_len;
 		if (wpa_supplicant_set_suites(wpa_s, bss, ssid,
 					      wpa_ie, &wpa_ie_len)) {
@@ -2671,6 +2679,14 @@ static u8 * wpas_populate_assoc_ies(
 		wpa_dbg(wpa_s, MSG_DEBUG,
 			"Overriding auth_alg selection: 0x%x", algs);
 	}
+
+#ifdef CONFIG_SAE
+	if (sae_pmksa_cached && algs == WPA_AUTH_ALG_SAE) {
+		wpa_dbg(wpa_s, MSG_DEBUG,
+			"SAE: Use WPA_AUTH_ALG_OPEN for PMKSA caching attempt");
+		algs = WPA_AUTH_ALG_OPEN;
+	}
+#endif /* CONFIG_SAE */
 
 #ifdef CONFIG_P2P
 	if (wpa_s->global->p2p) {
@@ -2846,8 +2862,8 @@ static u8 * wpas_populate_assoc_ies(
 			os_memcpy(wpa_ie + wpa_ie_len,
 				  wpabuf_head(owe_ie), wpabuf_len(owe_ie));
 			wpa_ie_len += wpabuf_len(owe_ie);
-			wpabuf_free(owe_ie);
 		}
+		wpabuf_free(owe_ie);
 	}
 #endif /* CONFIG_OWE */
 
@@ -2957,6 +2973,34 @@ static void wpas_update_fils_connect_params(struct wpa_supplicant *wpa_s)
 	os_free(wpa_ie);
 }
 #endif /* CONFIG_FILS && IEEE8021X_EAPOL */
+
+
+#ifdef CONFIG_MBO
+void wpas_update_mbo_connect_params(struct wpa_supplicant *wpa_s)
+{
+	struct wpa_driver_associate_params params;
+	u8 *wpa_ie;
+
+	/*
+	 * Update MBO connect params only in case of change of MBO attributes
+	 * when connected, if the AP support MBO.
+	 */
+
+	if (wpa_s->wpa_state != WPA_COMPLETED || !wpa_s->current_ssid ||
+	    !wpa_s->current_bss ||
+	    !wpa_bss_get_vendor_ie(wpa_s->current_bss, MBO_IE_VENDOR_TYPE))
+		return;
+
+	os_memset(&params, 0, sizeof(params));
+	wpa_ie = wpas_populate_assoc_ies(wpa_s, wpa_s->current_bss,
+					 wpa_s->current_ssid, &params, NULL);
+	if (!wpa_ie)
+		return;
+
+	wpa_drv_update_connect_params(wpa_s, &params, WPA_DRV_UPDATE_ASSOC_IES);
+	os_free(wpa_ie);
+}
+#endif /* CONFIG_MBO */
 
 
 static void wpas_start_assoc_cb(struct wpa_radio_work *work, int deinit)
@@ -3378,16 +3422,17 @@ static void wpa_supplicant_clear_connection(struct wpa_supplicant *wpa_s,
  * current AP.
  */
 void wpa_supplicant_deauthenticate(struct wpa_supplicant *wpa_s,
-				   int reason_code)
+				   u16 reason_code)
 {
 	u8 *addr = NULL;
 	union wpa_event_data event;
 	int zero_addr = 0;
 
 	wpa_dbg(wpa_s, MSG_DEBUG, "Request to deauthenticate - bssid=" MACSTR
-		" pending_bssid=" MACSTR " reason=%d state=%s",
+		" pending_bssid=" MACSTR " reason=%d (%s) state=%s",
 		MAC2STR(wpa_s->bssid), MAC2STR(wpa_s->pending_bssid),
-		reason_code, wpa_supplicant_state_txt(wpa_s->wpa_state));
+		reason_code, reason2str(reason_code),
+		wpa_supplicant_state_txt(wpa_s->wpa_state));
 
 	if (!is_zero_ether_addr(wpa_s->pending_bssid) &&
 	    (wpa_s->wpa_state == WPA_AUTHENTICATING ||
@@ -3429,7 +3474,7 @@ void wpa_supplicant_deauthenticate(struct wpa_supplicant *wpa_s,
 	if (addr) {
 		wpa_drv_deauthenticate(wpa_s, addr, reason_code);
 		os_memset(&event, 0, sizeof(event));
-		event.deauth_info.reason_code = (u16) reason_code;
+		event.deauth_info.reason_code = reason_code;
 		event.deauth_info.locally_generated = 1;
 		wpa_supplicant_event(wpa_s, EVENT_DEAUTH, &event);
 		if (zero_addr)
@@ -6737,6 +6782,9 @@ void wpas_connection_failed(struct wpa_supplicant *wpa_s, const u8 *bssid)
 	 * TODO: if more than one possible AP is available in scan results,
 	 * could try the other ones before requesting a new scan.
 	 */
+
+	/* speed up the connection attempt with normal scan */
+	wpa_s->normal_scans = 0;
 	wpa_supplicant_req_scan(wpa_s, timeout / 1000,
 				1000 * (timeout % 1000));
 }

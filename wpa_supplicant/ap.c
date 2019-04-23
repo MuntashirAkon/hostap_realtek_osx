@@ -334,10 +334,13 @@ static int wpa_supplicant_conf_ap(struct wpa_supplicant *wpa_s,
 			list[8] = -1;
 		}
 		conf->supported_rates = list;
+	}
+
 #ifdef CONFIG_IEEE80211AX
+	if (ssid->mode == WPAS_MODE_P2P_GO ||
+	    ssid->mode == WPAS_MODE_P2P_GROUP_FORMATION)
 		conf->ieee80211ax = ssid->he;
 #endif /* CONFIG_IEEE80211AX */
-	}
 
 	bss->isolate = !wpa_s->conf->p2p_intra_bss;
 	bss->force_per_enrollee_psk = wpa_s->global->p2p_per_sta_psk;
@@ -1384,7 +1387,7 @@ int ap_ctrl_iface_chanswitch(struct wpa_supplicant *wpa_s, const char *pos)
 
 
 void wpas_ap_ch_switch(struct wpa_supplicant *wpa_s, int freq, int ht,
-		       int offset, int width, int cf1, int cf2)
+		       int offset, int width, int cf1, int cf2, int finished)
 {
 	struct hostapd_iface *iface = wpa_s->ap_iface;
 
@@ -1396,7 +1399,7 @@ void wpas_ap_ch_switch(struct wpa_supplicant *wpa_s, int freq, int ht,
 	if (wpa_s->current_ssid)
 		wpa_s->current_ssid->frequency = freq;
 	hostapd_event_ch_switch(iface->bss[0], freq, ht,
-				offset, width, cf1, cf2);
+				offset, width, cf1, cf2, finished);
 }
 
 

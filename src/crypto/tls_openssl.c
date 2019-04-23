@@ -1735,9 +1735,9 @@ static int tls_match_altsubject(X509 *cert, const char *match)
 
 #ifndef CONFIG_NATIVE_WINDOWS
 static int domain_suffix_match(const u8 *val, size_t len, const char *match,
-			       int full)
+			       size_t match_len, int full)
 {
-	size_t i, match_len;
+	size_t i;
 
 	/* Check for embedded nuls that could mess up suffix matching */
 	for (i = 0; i < len; i++) {
@@ -1747,7 +1747,6 @@ static int domain_suffix_match(const u8 *val, size_t len, const char *match,
 		}
 	}
 
-	match_len = os_strlen(match);
 	if (match_len > len || (full && match_len != len))
 		return 0;
 
@@ -1980,12 +1979,10 @@ static int tls_match_dn_field(X509 *cert, const char *match)
 }
 
 
-static int tls_match_suffix(X509 *cert, const char *match, int full)
+#ifndef CONFIG_NATIVE_WINDOWS
+static int tls_match_suffix_helper(X509 *cert, const char *match,
+				   size_t match_len, int full)
 {
-#ifdef CONFIG_NATIVE_WINDOWS
-	/* wincrypt.h has conflicting X509_NAME definition */
-	return -1;
-#else /* CONFIG_NATIVE_WINDOWS */
 	GENERAL_NAME *gen;
 	void *ext;
 	int i;
@@ -2007,8 +2004,8 @@ static int tls_match_suffix(X509 *cert, const char *match, int full)
 				  gen->d.dNSName->data,
 				  gen->d.dNSName->length);
 		if (domain_suffix_match(gen->d.dNSName->data,
-					gen->d.dNSName->length, match, full) ==
-		    1) {
+					gen->d.dNSName->length,
+					match, match_len, full) == 1) {
 			wpa_printf(MSG_DEBUG, "TLS: %s in dNSName found",
 				   full ? "Match" : "Suffix match");
 			sk_GENERAL_NAME_pop_free(ext, GENERAL_NAME_free);
@@ -2039,8 +2036,8 @@ static int tls_match_suffix(X509 *cert, const char *match, int full)
 			continue;
 		wpa_hexdump_ascii(MSG_DEBUG, "TLS: Certificate commonName",
 				  cn->data, cn->length);
-		if (domain_suffix_match(cn->data, cn->length, match, full) == 1)
-		{
+		if (domain_suffix_match(cn->data, cn->length,
+					match, match_len, full) == 1) {
 			wpa_printf(MSG_DEBUG, "TLS: %s in commonName found",
 				   full ? "Match" : "Suffix match");
 			return 1;
@@ -2049,6 +2046,25 @@ static int tls_match_suffix(X509 *cert, const char *match, int full)
 
 	wpa_printf(MSG_DEBUG, "TLS: No CommonName %smatch found",
 		   full ? "": "suffix ");
+	return 0;
+}
+#endif /* CONFIG_NATIVE_WINDOWS */
+
+
+static int tls_match_suffix(X509 *cert, const char *match, int full)
+{
+#ifdef CONFIG_NATIVE_WINDOWS
+	/* wincrypt.h has conflicting X509_NAME definition */
+	return -1;
+#else /* CONFIG_NATIVE_WINDOWS */
+	const char *token, *last = NULL;
+
+	/* Process each match alternative separately until a match is found */
+	while ((token = cstr_token(match, ";", &last))) {
+		if (tls_match_suffix_helper(cert, token, last - token, full))
+			return 1;
+	}
+
 	return 0;
 #endif /* CONFIG_NATIVE_WINDOWS */
 }
@@ -5021,6 +5037,9 @@ int tls_global_set_params(void *tls_ctx,
 		return -1;
 #else /* OPENSSL_IS_BORINGSSL || < 1.0.2 */
 #ifndef OPENSSL_NO_EC
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+		SSL_CTX_set_ecdh_auto(ssl_ctx, 1);
+#endif
 		if (SSL_CTX_set1_curves_list(ssl_ctx,
 					     params->openssl_ecdh_curves) !=
 		    1) {

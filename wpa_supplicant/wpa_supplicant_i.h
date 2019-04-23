@@ -1291,7 +1291,7 @@ struct wpa_ssid * wpa_supplicant_get_ssid(struct wpa_supplicant *wpa_s);
 const char * wpa_supplicant_get_eap_mode(struct wpa_supplicant *wpa_s);
 void wpa_supplicant_cancel_auth_timeout(struct wpa_supplicant *wpa_s);
 void wpa_supplicant_deauthenticate(struct wpa_supplicant *wpa_s,
-				   int reason_code);
+				   u16 reason_code);
 
 struct wpa_ssid * wpa_supplicant_add_network(struct wpa_supplicant *wpa_s);
 int wpa_supplicant_remove_network(struct wpa_supplicant *wpa_s, int id);
@@ -1402,6 +1402,7 @@ struct wpabuf * mbo_build_anqp_buf(struct wpa_supplicant *wpa_s,
 void mbo_parse_rx_anqp_resp(struct wpa_supplicant *wpa_s,
 			    struct wpa_bss *bss, const u8 *sa,
 			    const u8 *data, size_t slen);
+void wpas_update_mbo_connect_params(struct wpa_supplicant *wpa_s);
 
 /* op_classes.c */
 enum chan_allowed {

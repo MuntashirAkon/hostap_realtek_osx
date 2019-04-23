@@ -1236,6 +1236,7 @@ void ieee802_1x_new_station(struct hostapd_data *hapd, struct sta_info *sta)
 		sta->eapol_sm->portValid = TRUE;
 		if (sta->eapol_sm->eap)
 			eap_sm_notify_cached(sta->eapol_sm->eap);
+		wpa_auth_set_ptk_rekey_timer(sta->wpa_sm);
 		return;
 	}
 #endif /* CONFIG_FILS */
@@ -2733,7 +2734,8 @@ int ieee802_1x_get_mib_sta(struct hostapd_data *hapd, struct sta_info *sta,
 				   wpa_auth_sta_key_mgmt(sta->wpa_sm))) ?
 			  1 : 2,
 			  (unsigned int) diff.sec,
-			  sm->identity ? (char *) sm->identity : identity_buf);
+			  sm->identity ? (char *) sm->identity :
+					 (identity_buf ? identity_buf : "N/A"));
 	os_free(identity_buf);
 	if (os_snprintf_error(buflen - len, ret))
 		return len;

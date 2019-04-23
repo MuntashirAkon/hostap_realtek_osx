@@ -17,7 +17,7 @@ import subprocess
 import hwsim_utils
 import hostapd
 from wpasupplicant import WpaSupplicant
-from utils import HwsimSkip, alloc_fail, fail_test, wait_fail_trigger
+from utils import HwsimSkip, alloc_fail, fail_test, wait_fail_trigger, start_monitor, stop_monitor, radiotap_build
 from test_ap_psk import find_wpas_process, read_process_memory, verify_not_present, get_key_locations
 
 @remote_compatible
@@ -76,10 +76,10 @@ def test_sae_password_ffc(dev, apdev):
     params = hostapd.wpa2_params(ssid="test-sae",
                                  passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
-    params['sae_groups'] = '22'
+    params['sae_groups'] = '15'
     hapd = hostapd.add_ap(apdev[0], params)
 
-    dev[0].request("SET sae_groups 22")
+    dev[0].request("SET sae_groups 15")
 
     for i in range(10):
         password = "12345678-" + str(i)
@@ -150,6 +150,7 @@ def test_sae_groups(dev, apdev):
         logger.info("Add Brainpool EC groups since OpenSSL is new enough")
         sae_groups += [27, 28, 29, 30]
     heavy_groups = [14, 15, 16]
+    suitable_groups = [15, 16, 17, 18, 19, 20, 21, 28, 29, 30]
     groups = [str(g) for g in sae_groups]
     params = hostapd.wpa2_params(ssid="test-sae-groups",
                                  passphrase="12345678")
@@ -176,6 +177,11 @@ def test_sae_groups(dev, apdev):
             if ev is None:
                 if "BoringSSL" in tls and int(g) in [25]:
                     logger.info("Ignore connection failure with group " + g + " with BoringSSL")
+                    dev[0].remove_network(id)
+                    dev[0].dump_monitor()
+                    continue
+                if int(g) not in suitable_groups:
+                    logger.info("Ignore connection failure with unsuitable group " + g)
                     dev[0].remove_network(id)
                     dev[0].dump_monitor()
                     continue
@@ -496,13 +502,10 @@ def test_sae_oom_wpas(dev, apdev):
     params = hostapd.wpa2_params(ssid="test-sae",
                                  passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
-    params['sae_groups'] = '19 25 26'
+    params['sae_groups'] = '19 25 26 20'
     hapd = hostapd.add_ap(apdev[0], params)
 
-    dev[0].request("SET sae_groups 25")
-    tls = dev[0].request("GET tls_library")
-    if "BoringSSL" in tls:
-        dev[0].request("SET sae_groups 26")
+    dev[0].request("SET sae_groups 20")
     with alloc_fail(dev[0], 1, "sae_set_group"):
         dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
                        scan_freq="2412")
@@ -819,6 +822,49 @@ def test_sae_proto_hostapd(dev, apdev):
     # "SAE: Unsupported Finite Cyclic Group 65535"
     hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + hdr2 + "030001000000" + "ffff" + scalar[:-2])
 
+def test_sae_proto_hostapd_ecc(dev, apdev):
+    """SAE protocol testing with hostapd (ECC)"""
+    params = hostapd.wpa2_params(ssid="test-sae", passphrase="foofoofoo")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_groups'] = "19"
+    hapd = hostapd.add_ap(apdev[0], params)
+    hapd.set("ext_mgmt_frame_handling", "1")
+    bssid = hapd.own_addr().replace(':', '')
+    addr = "020000000000"
+    addr2 = "020000000001"
+    hdr = "b0003a01" + bssid + addr + bssid + "1000"
+    hdr2 = "b0003a01" + bssid + addr2 + bssid + "1000"
+    group = "1300"
+    scalar = "9e9a959bf2dda875a4a29ce9b2afef46f2d83060930124cd9e39ddce798cd69a"
+    element_x = "dfc55fd8622b91d362f4d1fc9646474d7fba0ff7cce6ca58b8e96a931e070220"
+    element_y = "dac8a4e80724f167c1349cc9e1f9dd82a7c77b29d49789b63b72b4c849301a28"
+    # sae_parse_commit_element_ecc() failure to parse peer element
+    # (depending on crypto library, either crypto_ec_point_from_bin() failure
+    # or crypto_ec_point_is_on_curve() returning 0)
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + hdr + "030001000000" + group + scalar + element_x + element_y)
+    # Unexpected continuation of the connection attempt with confirm
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + hdr + "030002000000" + "0000" + "fd7b081ff4e8676f03612a4140eedcd3c179ab3a13b93863c6f7ca451340b9ae")
+
+def test_sae_proto_hostapd_ffc(dev, apdev):
+    """SAE protocol testing with hostapd (FFC)"""
+    params = hostapd.wpa2_params(ssid="test-sae", passphrase="foofoofoo")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_groups'] = "22"
+    hapd = hostapd.add_ap(apdev[0], params)
+    hapd.set("ext_mgmt_frame_handling", "1")
+    bssid = hapd.own_addr().replace(':', '')
+    addr = "020000000000"
+    addr2 = "020000000001"
+    hdr = "b0003a01" + bssid + addr + bssid + "1000"
+    hdr2 = "b0003a01" + bssid + addr2 + bssid + "1000"
+    group = "1600"
+    scalar = "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000044cc46a73c07ef479dc66ec1f5e8ccf25131fa40"
+    element = "0f1d67025e12fc874cf718c35b19d1ab2db858215623f1ce661cbd1d7b1d7a09ceda7dba46866cf37044259b5cac4db15e7feb778edc8098854b93a84347c1850c02ee4d7dac46db79c477c731085d5b39f56803cda1eeac4a2fbbccb9a546379e258c00ebe93dfdd0a34cf8ce5c55cf905a89564a590b7e159fb89198e9d5cd"
+    # sae_parse_commit_element_ffc() failure to parse peer element
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + hdr + "030001000000" + group + scalar + element)
+    # Unexpected continuation of the connection attempt with confirm
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + hdr + "030002000000" + "0000" + "fd7b081ff4e8676f03612a4140eedcd3c179ab3a13b93863c6f7ca451340b9ae")
+
 @remote_compatible
 def test_sae_no_ffc_by_default(dev, apdev):
     """SAE and default groups rejecting FFC"""
@@ -828,7 +874,7 @@ def test_sae_no_ffc_by_default(dev, apdev):
     params['wpa_key_mgmt'] = 'SAE'
     hapd = hostapd.add_ap(apdev[0], params)
 
-    dev[0].request("SET sae_groups 5")
+    dev[0].request("SET sae_groups 15")
     dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE", scan_freq="2412",
                    wait_connect=False)
     ev = dev[0].wait_event(["SME: Trying to authenticate"], timeout=3)
@@ -888,7 +934,7 @@ def test_sae_reflection_attack_ecc(dev, apdev):
 @remote_compatible
 def test_sae_reflection_attack_ffc(dev, apdev):
     """SAE reflection attack (FFC)"""
-    sae_reflection_attack(apdev[0], dev[0], 5)
+    sae_reflection_attack(apdev[0], dev[0], 15)
 
 def sae_reflection_attack_internal(apdev, dev, group):
     if "SAE" not in dev.get_capability("auth_alg"):
@@ -904,6 +950,9 @@ def sae_reflection_attack_internal(apdev, dev, group):
     dev.request("SET sae_groups %d" % group)
     dev.connect("test-sae", psk="reflection-attack", key_mgmt="SAE",
                 scan_freq="2412", wait_connect=False)
+    ev = dev.wait_event(["SME: Trying to authenticate"], timeout=10)
+    if ev is None:
+        raise Exception("No authentication attempt seen")
     ev = dev.wait_event(["CTRL-EVENT-CONNECTED"], timeout=1)
     if ev is not None:
         raise Exception("Unexpected connection")
@@ -916,7 +965,7 @@ def test_sae_reflection_attack_ecc_internal(dev, apdev):
 @remote_compatible
 def test_sae_reflection_attack_ffc_internal(dev, apdev):
     """SAE reflection attack (FFC) - internal"""
-    sae_reflection_attack_internal(apdev[0], dev[0], 5)
+    sae_reflection_attack_internal(apdev[0], dev[0], 15)
 
 @remote_compatible
 def test_sae_commit_override(dev, apdev):
@@ -946,6 +995,70 @@ def test_sae_commit_override2(dev, apdev):
     hapd = hostapd.add_ap(apdev[0], params)
     dev[0].request("SET sae_groups ")
     dev[0].set('sae_commit_override', '13ffbad00d215867a7c5ff37d87bb9bdb7cb116e520f71e8d7a794ca2606d537ddc6c099c40e7a25372b80a8fd443cd7dd222c8ea21b8ef372d4b3e316c26a73fd999cc79ad483eb826e7b3893ea332da68fa13224bcdeb4fb18b0584dd100a2c514')
+    dev[0].connect("test-sae", psk="test-sae", key_mgmt="SAE",
+                   scan_freq="2412", wait_connect=False)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED"], timeout=1)
+    if ev is not None:
+        raise Exception("Unexpected connection")
+
+def test_sae_commit_invalid_scalar_element_ap(dev, apdev):
+    """SAE commit invalid scalar/element from AP"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae",
+                                 passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_commit_override'] = '1300' + 96*'00'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].request("SET sae_groups ")
+    dev[0].connect("test-sae", psk="test-sae", key_mgmt="SAE",
+                   scan_freq="2412", wait_connect=False)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED"], timeout=1)
+    if ev is not None:
+        raise Exception("Unexpected connection")
+
+def test_sae_commit_invalid_element_ap(dev, apdev):
+    """SAE commit invalid element from AP"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae",
+                                 passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_commit_override'] = '1300' + 31*'00' + '02' + 64*'00'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].request("SET sae_groups ")
+    dev[0].connect("test-sae", psk="test-sae", key_mgmt="SAE",
+                   scan_freq="2412", wait_connect=False)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED"], timeout=1)
+    if ev is not None:
+        raise Exception("Unexpected connection")
+
+def test_sae_commit_invalid_scalar_element_sta(dev, apdev):
+    """SAE commit invalid scalar/element from STA"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae",
+                                 passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].request("SET sae_groups ")
+    dev[0].set('sae_commit_override', '1300' + 96*'00')
+    dev[0].connect("test-sae", psk="test-sae", key_mgmt="SAE",
+                   scan_freq="2412", wait_connect=False)
+    ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED"], timeout=1)
+    if ev is not None:
+        raise Exception("Unexpected connection")
+
+def test_sae_commit_invalid_element_sta(dev, apdev):
+    """SAE commit invalid element from STA"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae",
+                                 passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].request("SET sae_groups ")
+    dev[0].set('sae_commit_override', '1300' + 31*'00' + '02' + 64*'00')
     dev[0].connect("test-sae", psk="test-sae", key_mgmt="SAE",
                    scan_freq="2412", wait_connect=False)
     ev = dev[0].wait_event(["CTRL-EVENT-CONNECTED"], timeout=1)
@@ -1023,7 +1136,7 @@ def test_sae_pwe_failure(dev, apdev):
         raise HwsimSkip("SAE not supported")
     params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
-    params['sae_groups'] = '19 5'
+    params['sae_groups'] = '19 15'
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].request("SET sae_groups 19")
@@ -1038,14 +1151,14 @@ def test_sae_pwe_failure(dev, apdev):
         dev[0].request("REMOVE_NETWORK all")
         dev[0].wait_disconnected()
 
-    dev[0].request("SET sae_groups 5")
+    dev[0].request("SET sae_groups 15")
     with fail_test(dev[0], 1, "hmac_sha256_vector;sae_derive_pwe_ffc"):
         dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
                        scan_freq="2412")
         dev[0].request("REMOVE_NETWORK all")
         dev[0].wait_disconnected()
 
-    dev[0].request("SET sae_groups 5")
+    dev[0].request("SET sae_groups 15")
     with fail_test(dev[0], 1, "sae_test_pwd_seed_ffc"):
         dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
                        scan_freq="2412")
@@ -1064,7 +1177,7 @@ def test_sae_bignum_failure(dev, apdev):
         raise HwsimSkip("SAE not supported")
     params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
-    params['sae_groups'] = '19 5 22'
+    params['sae_groups'] = '19 15 22'
     hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].request("SET sae_groups 19")
@@ -1105,7 +1218,7 @@ def test_sae_bignum_failure(dev, apdev):
             dev[0].dump_monitor()
             hapd.dump_monitor()
 
-    dev[0].request("SET sae_groups 5")
+    dev[0].request("SET sae_groups 15")
     tests = [(1, "crypto_bignum_init_set;sae_set_group"),
              (2, "crypto_bignum_init_set;sae_set_group"),
              (1, "crypto_bignum_init_set;sae_get_rand"),
@@ -1133,6 +1246,15 @@ def test_sae_bignum_failure(dev, apdev):
             dev[0].request("REMOVE_NETWORK all")
             dev[0].dump_monitor()
             hapd.dump_monitor()
+
+def test_sae_bignum_failure_unsafe_group(dev, apdev):
+    """SAE and bignum failure unsafe group"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_groups'] = '22'
+    hapd = hostapd.add_ap(apdev[0], params)
 
     dev[0].request("SET sae_groups 22")
     tests = [(1, "crypto_bignum_init_set;sae_test_pwd_seed_ffc"),
@@ -1344,7 +1466,7 @@ def test_sae_password_id_ecc(dev, apdev):
 
 def test_sae_password_id_ffc(dev, apdev):
     """SAE and password identifier (FFC)"""
-    run_sae_password_id(dev, apdev, "22")
+    run_sae_password_id(dev, apdev, "15")
 
 def test_sae_password_id_only(dev, apdev):
     """SAE and password identifier (exclusively)"""
@@ -1447,30 +1569,6 @@ def sae_rx_commit_token_req(sock, radiotap, send_two=False):
     if send_two:
         sock.send(radiotap + frame)
     return True
-
-def radiotap_build():
-    radiotap_payload = struct.pack('BB', 0x08, 0)
-    radiotap_payload += struct.pack('BB', 0, 0)
-    radiotap_payload += struct.pack('BB', 0, 0)
-    radiotap_hdr = struct.pack('<BBHL', 0, 0, 8 + len(radiotap_payload),
-                               0xc002)
-    return radiotap_hdr + radiotap_payload
-
-def start_monitor(ifname, freq=2412):
-    subprocess.check_call(["iw", ifname, "set", "type", "monitor"])
-    subprocess.call(["ip", "link", "set", "dev", ifname, "up"])
-    subprocess.check_call(["iw", ifname, "set", "freq", str(freq)])
-
-    ETH_P_ALL = 3
-    sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
-                         socket.htons(ETH_P_ALL))
-    sock.bind((ifname, 0))
-    sock.settimeout(0.5)
-    return sock
-
-def stop_monitor(ifname):
-    subprocess.call(["ip", "link", "set", "dev", ifname, "down"])
-    subprocess.call(["iw", ifname, "set", "type", "managed"])
 
 def run_sae_anti_clogging_during_attack(dev, apdev):
     if "SAE" not in dev[0].get_capability("auth_alg"):
