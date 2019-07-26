@@ -1222,7 +1222,7 @@ struct wpa_ssid * wpa_scan_res_match(struct wpa_supplicant *wpa_s,
 			continue;
 		}
 
-		if (ssid->mode != IEEE80211_MODE_MESH && !bss_is_ess(bss) &&
+		if (ssid->mode != WPAS_MODE_MESH && !bss_is_ess(bss) &&
 		    !bss_is_pbss(bss)) {
 			if (debug_print)
 				wpa_dbg(wpa_s, MSG_DEBUG,
@@ -1246,7 +1246,7 @@ struct wpa_ssid * wpa_scan_res_match(struct wpa_supplicant *wpa_s,
 		}
 
 #ifdef CONFIG_MESH
-		if (ssid->mode == IEEE80211_MODE_MESH && ssid->frequency > 0 &&
+		if (ssid->mode == WPAS_MODE_MESH && ssid->frequency > 0 &&
 		    ssid->frequency != bss->freq) {
 			if (debug_print)
 				wpa_dbg(wpa_s, MSG_DEBUG,
@@ -1615,9 +1615,9 @@ wpa_supplicant_pick_new_network(struct wpa_supplicant *wpa_s)
 				continue;
 			}
 #endif /* !CONFIG_IBSS_RSN */
-			if (ssid->mode == IEEE80211_MODE_IBSS ||
-			    ssid->mode == IEEE80211_MODE_AP ||
-			    ssid->mode == IEEE80211_MODE_MESH)
+			if (ssid->mode == WPAS_MODE_IBSS ||
+			    ssid->mode == WPAS_MODE_AP ||
+			    ssid->mode == WPAS_MODE_MESH)
 				return ssid;
 		}
 	}
@@ -2839,7 +2839,7 @@ static void wpa_supplicant_event_assoc(struct wpa_supplicant *wpa_s,
 	if (wpa_s->key_mgmt == WPA_KEY_MGMT_NONE ||
 	    wpa_s->key_mgmt == WPA_KEY_MGMT_WPA_NONE ||
 	    (wpa_s->current_ssid &&
-	     wpa_s->current_ssid->mode == IEEE80211_MODE_IBSS)) {
+	     wpa_s->current_ssid->mode == WPAS_MODE_IBSS)) {
 		if (wpa_s->current_ssid &&
 		    wpa_s->key_mgmt == WPA_KEY_MGMT_WPA_NONE &&
 		    (wpa_s->drv_flags &
@@ -4059,9 +4059,18 @@ static void wpas_event_assoc_reject(struct wpa_supplicant *wpa_s,
 				    union wpa_event_data *data)
 {
 	const u8 *bssid = data->assoc_reject.bssid;
+#ifdef CONFIG_MBO
+	struct wpa_bss *reject_bss;
+#endif /* CONFIG_MBO */
 
 	if (!bssid || is_zero_ether_addr(bssid))
 		bssid = wpa_s->pending_bssid;
+#ifdef CONFIG_MBO
+	if (wpa_s->drv_flags & WPA_DRIVER_FLAGS_SME)
+		reject_bss = wpa_s->current_bss;
+	else
+		reject_bss = wpa_bss_get_bssid(wpa_s, bssid);
+#endif /* CONFIG_MBO */
 
 	if (data->assoc_reject.bssid)
 		wpa_msg(wpa_s, MSG_INFO, WPA_EVENT_ASSOC_REJECT
@@ -4112,8 +4121,7 @@ static void wpas_event_assoc_reject(struct wpa_supplicant *wpa_s,
 #ifdef CONFIG_MBO
 	if (data->assoc_reject.status_code ==
 	    WLAN_STATUS_DENIED_POOR_CHANNEL_CONDITIONS &&
-	    wpa_s->current_bss && data->assoc_reject.bssid &&
-	    data->assoc_reject.resp_ies) {
+	    reject_bss && data->assoc_reject.resp_ies) {
 		const u8 *rssi_rej;
 
 		rssi_rej = mbo_get_attr_from_ies(
@@ -4124,13 +4132,12 @@ static void wpas_event_assoc_reject(struct wpa_supplicant *wpa_s,
 			wpa_printf(MSG_DEBUG,
 				   "OCE: RSSI-based association rejection from "
 				   MACSTR " (Delta RSSI: %u, Retry Delay: %u)",
-				   MAC2STR(data->assoc_reject.bssid),
+				   MAC2STR(reject_bss->bssid),
 				   rssi_rej[2], rssi_rej[3]);
 			wpa_bss_tmp_disallow(wpa_s,
-					     data->assoc_reject.bssid,
+					     reject_bss->bssid,
 					     rssi_rej[3],
-					     rssi_rej[2] +
-					     wpa_s->current_bss->level);
+					     rssi_rej[2] + reject_bss->level);
 		}
 	}
 #endif /* CONFIG_MBO */

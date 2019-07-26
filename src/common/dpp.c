@@ -745,17 +745,19 @@ static int dpp_clone_uri(struct dpp_bootstrap_info *bi, const char *uri)
 int dpp_parse_uri_chan_list(struct dpp_bootstrap_info *bi,
 			    const char *chan_list)
 {
-	const char *pos = chan_list;
-	int opclass, channel, freq;
+	const char *pos = chan_list, *pos2;
+	int opclass = -1, channel, freq;
 
 	while (pos && *pos && *pos != ';') {
-		opclass = atoi(pos);
+		pos2 = pos;
+		while (*pos2 >= '0' && *pos2 <= '9')
+			pos2++;
+		if (*pos2 == '/') {
+			opclass = atoi(pos);
+			pos = pos2 + 1;
+		}
 		if (opclass <= 0)
 			goto fail;
-		pos = os_strchr(pos, '/');
-		if (!pos)
-			goto fail;
-		pos++;
 		channel = atoi(pos);
 		if (channel <= 0)
 			goto fail;
@@ -1135,7 +1137,7 @@ static void dpp_debug_print_key(const char *title, EVP_PKEY *key)
 static EVP_PKEY * dpp_gen_keypair(const struct dpp_curve_params *curve)
 {
 	EVP_PKEY_CTX *kctx = NULL;
-	EC_KEY *ec_params;
+	EC_KEY *ec_params = NULL;
 	EVP_PKEY *params = NULL, *key = NULL;
 	int nid;
 
@@ -1166,19 +1168,18 @@ static EVP_PKEY * dpp_gen_keypair(const struct dpp_curve_params *curve)
 	    EVP_PKEY_keygen_init(kctx) != 1 ||
 	    EVP_PKEY_keygen(kctx, &key) != 1) {
 		wpa_printf(MSG_ERROR, "DPP: Failed to generate EC key");
+		key = NULL;
 		goto fail;
 	}
 
 	if (wpa_debug_show_keys)
 		dpp_debug_print_key("Own generated key", key);
 
+fail:
+	EC_KEY_free(ec_params);
 	EVP_PKEY_free(params);
 	EVP_PKEY_CTX_free(kctx);
 	return key;
-fail:
-	EVP_PKEY_CTX_free(kctx);
-	EVP_PKEY_free(params);
-	return NULL;
 }
 
 
@@ -2788,6 +2789,7 @@ static int dpp_auth_build_resp_ok(struct dpp_authentication *auth)
 #endif /* CONFIG_TESTING_OPTIONS */
 	wpa_hexdump(MSG_DEBUG, "DPP: R-nonce", auth->r_nonce, nonce_len);
 
+	EVP_PKEY_free(auth->own_protocol_key);
 #ifdef CONFIG_TESTING_OPTIONS
 	if (dpp_protocol_key_override_len) {
 		const struct dpp_curve_params *tmp_curve;
@@ -3754,6 +3756,7 @@ dpp_auth_resp_rx(struct dpp_authentication *auth, const u8 *hdr,
 	}
 	EVP_PKEY_CTX_free(ctx);
 	ctx = NULL;
+	EVP_PKEY_free(auth->peer_protocol_key);
 	auth->peer_protocol_key = pr;
 	pr = NULL;
 
@@ -5255,6 +5258,7 @@ static EVP_PKEY * dpp_parse_jwk(struct json_token *jwk,
 
 	pkey = dpp_set_pubkey_point_group(group, wpabuf_head(x), wpabuf_head(y),
 					  wpabuf_len(x));
+	EC_GROUP_free(group);
 	*key_curve = curve;
 
 fail:
@@ -6591,6 +6595,7 @@ static EVP_PKEY * dpp_pkex_get_role_elem(const struct dpp_curve_params *curve,
 	EC_GROUP *group;
 	size_t len = curve->prime_len;
 	const u8 *x, *y;
+	EVP_PKEY *res;
 
 	switch (curve->ike_group) {
 	case 19:
@@ -6624,14 +6629,16 @@ static EVP_PKEY * dpp_pkex_get_role_elem(const struct dpp_curve_params *curve,
 	group = EC_GROUP_new_by_curve_name(OBJ_txt2nid(curve->name));
 	if (!group)
 		return NULL;
-	return dpp_set_pubkey_point_group(group, x, y, len);
+	res = dpp_set_pubkey_point_group(group, x, y, len);
+	EC_GROUP_free(group);
+	return res;
 }
 
 
 static EC_POINT * dpp_pkex_derive_Qi(const struct dpp_curve_params *curve,
 				     const u8 *mac_init, const char *code,
 				     const char *identifier, BN_CTX *bnctx,
-				     const EC_GROUP **ret_group)
+				     EC_GROUP **ret_group)
 {
 	u8 hash[DPP_MAX_HASH_LEN];
 	const u8 *addr[3];
@@ -6700,8 +6707,10 @@ out:
 	EC_KEY_free(Pi_ec);
 	EVP_PKEY_free(Pi);
 	BN_clear_free(hash_bn);
-	if (ret_group)
+	if (ret_group && Qi)
 		*ret_group = group2;
+	else
+		EC_GROUP_free(group2);
 	return Qi;
 fail:
 	EC_POINT_free(Qi);
@@ -6713,7 +6722,7 @@ fail:
 static EC_POINT * dpp_pkex_derive_Qr(const struct dpp_curve_params *curve,
 				     const u8 *mac_resp, const char *code,
 				     const char *identifier, BN_CTX *bnctx,
-				     const EC_GROUP **ret_group)
+				     EC_GROUP **ret_group)
 {
 	u8 hash[DPP_MAX_HASH_LEN];
 	const u8 *addr[3];
@@ -6782,8 +6791,10 @@ out:
 	EC_KEY_free(Pr_ec);
 	EVP_PKEY_free(Pr);
 	BN_clear_free(hash_bn);
-	if (ret_group)
+	if (ret_group && Qr)
 		*ret_group = group2;
+	else
+		EC_GROUP_free(group2);
 	return Qr;
 fail:
 	EC_POINT_free(Qr);
@@ -6852,6 +6863,7 @@ fail:
 	BN_free(y);
 	EC_POINT_free(point);
 	BN_CTX_free(ctx);
+	EC_GROUP_free(group);
 
 	return ret;
 }
@@ -6863,7 +6875,7 @@ static struct wpabuf * dpp_pkex_build_exchange_req(struct dpp_pkex *pkex)
 	EC_KEY *X_ec = NULL;
 	const EC_POINT *X_point;
 	BN_CTX *bnctx = NULL;
-	const EC_GROUP *group;
+	EC_GROUP *group = NULL;
 	EC_POINT *Qi = NULL, *M = NULL;
 	struct wpabuf *M_buf = NULL;
 	BIGNUM *Mx = NULL, *My = NULL;
@@ -6985,6 +6997,7 @@ out:
 	BN_clear_free(Mx);
 	BN_clear_free(My);
 	BN_CTX_free(bnctx);
+	EC_GROUP_free(group);
 	return msg;
 fail:
 	wpa_printf(MSG_INFO, "DPP: Failed to build PKEX Exchange Request");
@@ -7229,7 +7242,7 @@ struct dpp_pkex * dpp_pkex_rx_exchange_req(void *msg_ctx,
 	struct dpp_pkex *pkex = NULL;
 	EC_POINT *Qi = NULL, *Qr = NULL, *M = NULL, *X = NULL, *N = NULL;
 	BN_CTX *bnctx = NULL;
-	const EC_GROUP *group;
+	EC_GROUP *group = NULL;
 	BIGNUM *Mx = NULL, *My = NULL;
 	EC_KEY *Y_ec = NULL, *X_ec = NULL;;
 	const EC_POINT *Y_point;
@@ -7446,6 +7459,7 @@ out:
 	EC_POINT_free(X);
 	EC_KEY_free(X_ec);
 	EC_KEY_free(Y_ec);
+	EC_GROUP_free(group);
 	return pkex;
 fail:
 	wpa_printf(MSG_DEBUG, "DPP: PKEX Exchange Request processing failed");
@@ -7574,7 +7588,7 @@ struct wpabuf * dpp_pkex_rx_exchange_resp(struct dpp_pkex *pkex,
 {
 	const u8 *attr_status, *attr_id, *attr_key, *attr_group;
 	u16 attr_status_len, attr_id_len, attr_key_len, attr_group_len;
-	const EC_GROUP *group;
+	EC_GROUP *group = NULL;
 	BN_CTX *bnctx = NULL;
 	struct wpabuf *msg = NULL, *A_pub = NULL, *X_pub = NULL, *Y_pub = NULL;
 	const struct dpp_curve_params *curve = pkex->own_bi->curve;
@@ -7771,6 +7785,7 @@ out:
 	EC_KEY_free(Y_ec);
 	EVP_PKEY_CTX_free(ctx);
 	BN_CTX_free(bnctx);
+	EC_GROUP_free(group);
 	return msg;
 fail:
 	wpa_printf(MSG_DEBUG, "DPP: PKEX Exchange Response processing failed");
@@ -9015,7 +9030,7 @@ static void dpp_controller_start_gas_client(struct dpp_connection *conn)
 		return;
 	}
 	wpabuf_put_be32(conn->msg_out, wpabuf_len(buf) - 1);
-	wpabuf_put_data(conn->msg_out, wpabuf_head(buf) + 1,
+	wpabuf_put_data(conn->msg_out, wpabuf_head_u8(buf) + 1,
 			wpabuf_len(buf) - 1);
 	wpabuf_free(buf);
 
@@ -9332,6 +9347,9 @@ static int dpp_controller_rx_auth_req(struct dpp_connection *conn,
 	u16 r_bootstrap_len, i_bootstrap_len;
 	struct dpp_bootstrap_info *own_bi = NULL, *peer_bi = NULL;
 
+	if (!conn->ctrl)
+		return 0;
+
 	wpa_printf(MSG_DEBUG, "DPP: Authentication Request");
 
 	r_bootstrap = dpp_get_attr(buf, len, DPP_ATTR_R_BOOTSTRAP_KEY_HASH,
@@ -9379,8 +9397,7 @@ static int dpp_controller_rx_auth_req(struct dpp_connection *conn,
 		return -1;
 	}
 
-	if (conn->ctrl &&
-	    dpp_set_configurator(conn->ctrl->global, conn->ctrl->global->msg_ctx,
+	if (dpp_set_configurator(conn->ctrl->global, conn->ctrl->global->msg_ctx,
 				 conn->auth,
 				 conn->ctrl->configurator_params) < 0) {
 		dpp_connection_remove(conn);
@@ -9393,7 +9410,7 @@ static int dpp_controller_rx_auth_req(struct dpp_connection *conn,
 	if (!conn->msg_out)
 		return -1;
 	wpabuf_put_be32(conn->msg_out, wpabuf_len(conn->auth->resp_msg) - 1);
-	wpabuf_put_data(conn->msg_out, wpabuf_head(conn->auth->resp_msg) + 1,
+	wpabuf_put_data(conn->msg_out, wpabuf_head_u8(conn->auth->resp_msg) + 1,
 			wpabuf_len(conn->auth->resp_msg) - 1);
 
 	if (dpp_tcp_send(conn) == 1) {
@@ -9441,7 +9458,7 @@ static int dpp_controller_rx_auth_resp(struct dpp_connection *conn,
 		return -1;
 	}
 	wpabuf_put_be32(conn->msg_out, wpabuf_len(msg) - 1);
-	wpabuf_put_data(conn->msg_out, wpabuf_head(msg) + 1,
+	wpabuf_put_data(conn->msg_out, wpabuf_head_u8(msg) + 1,
 			wpabuf_len(msg) - 1);
 	wpabuf_free(msg);
 
@@ -9687,7 +9704,7 @@ static int dpp_tcp_rx_gas_resp(struct dpp_connection *conn, struct wpabuf *resp)
 		return -1;
 	}
 	wpabuf_put_be32(encaps, wpabuf_len(msg) - 1);
-	wpabuf_put_data(encaps, wpabuf_head(msg) + 1, wpabuf_len(msg) - 1);
+	wpabuf_put_data(encaps, wpabuf_head_u8(msg) + 1, wpabuf_len(msg) - 1);
 	wpabuf_free(msg);
 	wpa_hexdump_buf(MSG_MSGDUMP, "DPP: Outgoing TCP message", encaps);
 

@@ -102,6 +102,20 @@ enum reg_type {
 };
 
 /**
+ * struct hostapd_wmm_rule - WMM regulatory rule
+ * @min_cwmin: Lower bound of CW_min value
+ * @min_cwmax: Lower bound of CW_max value
+ * @min_aifs: Lower bound of AIFS value
+ * @max_txop: Upper bound of TXOP, value in units of 32 usec
+ */
+struct hostapd_wmm_rule {
+	int min_cwmin;
+	int min_cwmax;
+	int min_aifs;
+	int max_txop;
+};
+
+/**
  * struct hostapd_channel_data - Channel information
  */
 struct hostapd_channel_data {
@@ -156,33 +170,47 @@ struct hostapd_channel_data {
 	 * dfs_cac_ms - DFS CAC time in milliseconds
 	 */
 	unsigned int dfs_cac_ms;
+
+	/**
+	 * wmm_rules_valid - Indicates wmm_rules state
+	 */
+	int wmm_rules_valid;
+
+	/**
+	 * wmm_rules - WMM regulatory rules
+	 */
+	struct hostapd_wmm_rule wmm_rules[WMM_AC_NUM];
 };
 
-#define HE_MAX_NUM_SS 		8
-#define HE_MAX_PHY_CAPAB_SIZE	3
-
-/**
- * struct he_ppe_threshold - IEEE 802.11ax HE PPE Threshold
- */
-struct he_ppe_threshold {
-	u32 numss_m1;
-	u32 ru_count;
-	u32 ppet16_ppet8_ru3_ru0[HE_MAX_NUM_SS];
-};
+#define HE_MAX_MAC_CAPAB_SIZE	6
+#define HE_MAX_PHY_CAPAB_SIZE	11
+#define HE_MAX_MCS_CAPAB_SIZE	12
+#define HE_MAX_PPET_CAPAB_SIZE	25
 
 /**
  * struct he_capabilities - IEEE 802.11ax HE capabilities
  */
 struct he_capabilities {
 	u8 he_supported;
-	u32 phy_cap[HE_MAX_PHY_CAPAB_SIZE];
-	u32 mac_cap;
-	u32 mcs;
-	struct he_ppe_threshold ppet;
+	u8 phy_cap[HE_MAX_PHY_CAPAB_SIZE];
+	u8 mac_cap[HE_MAX_MAC_CAPAB_SIZE];
+	u8 mcs[HE_MAX_MCS_CAPAB_SIZE];
+	u8 ppet[HE_MAX_PPET_CAPAB_SIZE];
 };
 
 #define HOSTAPD_MODE_FLAG_HT_INFO_KNOWN BIT(0)
 #define HOSTAPD_MODE_FLAG_VHT_INFO_KNOWN BIT(1)
+
+
+enum ieee80211_op_mode {
+	IEEE80211_MODE_INFRA = 0,
+	IEEE80211_MODE_IBSS = 1,
+	IEEE80211_MODE_AP = 2,
+	IEEE80211_MODE_MESH = 5,
+
+	/* only add new entries before IEEE80211_MODE_NUM */
+	IEEE80211_MODE_NUM
+};
 
 /**
  * struct hostapd_hw_modes - Supported hardware mode information
@@ -243,14 +271,9 @@ struct hostapd_hw_modes {
 	/**
 	 * he_capab - HE (IEEE 802.11ax) capabilities
 	 */
-	struct he_capabilities he_capab;
+	struct he_capabilities he_capab[IEEE80211_MODE_NUM];
 };
 
-
-#define IEEE80211_MODE_INFRA	0
-#define IEEE80211_MODE_IBSS	1
-#define IEEE80211_MODE_AP	2
-#define IEEE80211_MODE_MESH	5
 
 #define IEEE80211_CAP_ESS	0x0001
 #define IEEE80211_CAP_IBSS	0x0002
@@ -697,6 +720,11 @@ struct hostapd_freq_params {
 	 * vht_enabled - Whether VHT is enabled
 	 */
 	int vht_enabled;
+
+	/**
+	 * he_enabled - Whether HE is enabled
+	 */
+	int he_enabled;
 
 	/**
 	 * center_freq1 - Segment 0 center frequency in MHz
@@ -1794,6 +1822,7 @@ struct hostapd_data;
 struct hostap_sta_driver_data {
 	unsigned long rx_packets, tx_packets;
 	unsigned long long rx_bytes, tx_bytes;
+	unsigned long long rx_airtime, tx_airtime;
 	int bytes_64bit; /* whether 64-bit byte counters are supported */
 	unsigned long current_tx_rate;
 	unsigned long current_rx_rate;
@@ -1803,6 +1832,8 @@ struct hostap_sta_driver_data {
 	unsigned long tx_retry_failed;
 	unsigned long tx_retry_count;
 	s8 last_ack_rssi;
+	unsigned long backlog_packets;
+	unsigned long backlog_bytes;
 	s8 signal;
 	u8 rx_vhtmcs;
 	u8 tx_vhtmcs;
@@ -1823,6 +1854,8 @@ struct hostapd_sta_add_params {
 	const struct ieee80211_vht_capabilities *vht_capabilities;
 	int vht_opmode_enabled;
 	u8 vht_opmode;
+	const struct ieee80211_he_capabilities *he_capab;
+	size_t he_capab_len;
 	u32 flags; /* bitmask of WPA_STA_* flags */
 	u32 flags_mask; /* unset bits in flags */
 #ifdef CONFIG_MESH
@@ -2980,6 +3013,16 @@ struct wpa_driver_ops {
 			     unsigned int flags_and);
 
 	/**
+	 * sta_set_airtime_weight - Set station airtime weight (AP only)
+	 * @priv: Private driver interface data
+	 * @addr: Station address
+	 * @weight: New weight for station airtime assignment
+	 * Returns: 0 on success, -1 on failure
+	 */
+	int (*sta_set_airtime_weight)(void *priv, const u8 *addr,
+				      unsigned int weight);
+
+	/**
 	 * set_tx_queue_params - Set TX queue parameters
 	 * @priv: Private driver interface data
 	 * @queue: Queue number (0 = VO, 1 = VI, 2 = BE, 3 = BK)
@@ -4017,6 +4060,18 @@ struct wpa_driver_ops {
 	int (*leave_mesh)(void *priv);
 
 	/**
+	 * probe_mesh_link - Inject a frame over direct mesh link to a given
+	 *	peer skipping the next_hop lookup from mpath table.
+	 * @priv: Private driver interface data
+	 * @addr: Peer MAC address
+	 * @eth: Ethernet frame to be sent
+	 * @len: Ethernet frame lengtn in bytes
+	 * Returns 0 on success, -1 on failure
+	 */
+	int (*probe_mesh_link)(void *priv, const u8 *addr, const u8 *eth,
+			       size_t len);
+
+	/**
 	 * do_acs - Automatically select channel
 	 * @priv: Private driver interface data
 	 * @params: Parameters for ACS
@@ -4209,6 +4264,21 @@ struct wpa_driver_ops {
 	 * Returns: 0 on success, < 0 on failure
 	 */
 	int (*set_4addr_mode)(void *priv, const char *bridge_ifname, int val);
+
+	/**
+	 * update_dh_ie - Update DH IE
+	 * @priv: Private driver interface data
+	 * @peer_mac: Peer MAC address
+	 * @reason_code: Reacon code
+	 * @ie: DH IE
+	 * @ie_len: DH IE length in bytes
+	 * Returns: 0 on success, -1 on failure
+	 *
+	 * This callback is used to let the driver know the DH processing result
+	 * and DH IE for a pending association.
+	 */
+	int (*update_dh_ie)(void *priv, const u8 *peer_mac, u16 reason_code,
+			    const u8 *ie, size_t ie_len);
 };
 
 /**
@@ -4754,6 +4824,11 @@ enum wpa_event_type {
 	 * This event is emitted when an interface is added/removed for WDS STA.
 	 */
 	EVENT_WDS_STA_INTERFACE_STATUS,
+
+	/**
+	  * EVENT_UPDATE_DH - Notification of updated DH information
+	  */
+	EVENT_UPDATE_DH,
 };
 
 
@@ -5587,6 +5662,15 @@ union wpa_event_data {
 			INTERFACE_REMOVED
 		} istatus;
 	} wds_sta_interface;
+
+	/**
+	 * struct update_dh - Data for EVENT_UPDATE_DH
+	 */
+	struct update_dh {
+		const u8 *peer;
+		const u8 *ie;
+		size_t ie_len;
+	} update_dh;
 };
 
 /**
