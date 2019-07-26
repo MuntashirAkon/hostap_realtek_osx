@@ -50,6 +50,10 @@ ifndef CONFIG_NO_WPA_PASSPHRASE
 BINALL += wpa_passphrase
 endif
 
+ifdef CONFIG_WPA_GUI
+BINALL += wpa_gui
+endif
+
 ALL = $(BINALL)
 ALL += systemd/wpa_supplicant.service
 ALL += systemd/wpa_supplicant@.service
@@ -59,7 +63,6 @@ ALL += dbus/fi.w1.wpa_supplicant1.service
 ifdef CONFIG_BUILD_WPA_CLIENT_SO
 ALL += libwpa_client.so
 endif
-
 
 all: verify_config $(ALL) dynamic_eap_methods
 
@@ -77,8 +80,8 @@ mkconfig:
 		echo '.config exists - did not replace it'; \
 		exit 1; \
 	fi
-	echo CONFIG_DRIVER_HOSTAP=y >> .config
-	echo CONFIG_DRIVER_WEXT=y >> .config
+	#echo CONFIG_DRIVER_HOSTAP=y >> .config
+	#echo CONFIG_DRIVER_WEXT=y >> .config
 
 $(DESTDIR)$(BINDIR)/%: %
 	install -D $(<) $(@)
@@ -1992,12 +1995,13 @@ wpa_gui:
 	@echo "wpa_gui has been removed - see wpa_gui-qt4 for replacement"
 
 wpa_gui-qt4/Makefile:
-	qmake -o wpa_gui-qt4/Makefile wpa_gui-qt4/wpa_gui.pro
+	/usr/local/opt/qt/bin/qmake -o wpa_gui-qt4/Makefile wpa_gui-qt4/wpa_gui.pro
 
 wpa_gui-qt4/lang/wpa_gui_de.qm: wpa_gui-qt4/lang/wpa_gui_de.ts
-	lrelease wpa_gui-qt4/wpa_gui.pro
+	/usr/local/opt/qt/bin/lrelease wpa_gui-qt4/wpa_gui.pro
 
-wpa_gui-qt4: wpa_gui-qt4/Makefile wpa_gui-qt4/lang/wpa_gui_de.qm
+wpa_gui-qt4:
+	wpa_gui-qt4/Makefile wpa_gui-qt4/lang/wpa_gui_de.qm
 	$(MAKE) -C wpa_gui-qt4
 
 FIPSDIR=/usr/local/ssl/fips-2.0
@@ -2021,5 +2025,6 @@ clean:
 	rm -f libwpa_client.a
 	rm -f libwpa_client.so
 	rm -f libwpa_test1 libwpa_test2
+	rm -rf wpa_gui-qt4/wpa_gui.app
 
 -include $(OBJS:%.o=%.d)
