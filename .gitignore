@@ -1,12 +1,15 @@
 *.a
 *.o
 *.d
+*.DS_Store
 *.gcno
 *.gcda
 *.gcov
 *.pyc
 *~
 .config
+.qmake.stash
+wpa_gui.app
 tests/hwsim/logs
 tests/remote/logs
 wpaspy/build
