@@ -551,12 +551,7 @@ def run_ap_vht160_no_dfs(dev, apdev, channel, ht_capab):
                 raise HwsimSkip("80/160 MHz channel not supported in regulatory information")
         raise
     finally:
-        if hapd:
-            hapd.request("DISABLE")
-        dev[0].disconnect_and_stop_scan()
-        subprocess.call(['iw', 'reg', 'set', '00'])
-        dev[0].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=0.5)
-        dev[0].flush_scan_cache()
+        clear_regdom(hapd, dev)
 
 def test_ap_vht160_no_ht40(dev, apdev):
     """VHT with 160 MHz channel width and HT40 disabled"""
@@ -778,7 +773,7 @@ def test_ap_vht_csa_vht40(dev, apdev):
             raise Exception("CSA finished event timed out")
         if "freq=5765" not in ev:
             raise Exception("Unexpected channel in CSA finished event")
-        ev = dev[0].wait_event("CTRL-EVENT-CHANNEL-SWITCH", timeout=5)
+        ev = dev[0].wait_event(["CTRL-EVENT-CHANNEL-SWITCH"], timeout=5)
         if ev is None:
             raise Exception("Channel switch event not seen")
         if "freq=5765" not in ev:
@@ -870,7 +865,7 @@ def test_ap_vht_csa_vht40_disable(dev, apdev):
             raise Exception("CSA finished event timed out")
         if "freq=5200" not in ev:
             raise Exception("Unexpected channel in CSA finished event")
-        ev = dev[0].wait_event("CTRL-EVENT-CHANNEL-SWITCH", timeout=5)
+        ev = dev[0].wait_event(["CTRL-EVENT-CHANNEL-SWITCH"], timeout=5)
         if ev is None:
             raise Exception("Channel switch event not seen")
         if "freq=5200" not in ev:

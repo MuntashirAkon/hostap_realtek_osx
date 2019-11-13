@@ -89,6 +89,17 @@ def test_ap_acs_chanlist(dev, apdev):
 
     dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
 
+def test_ap_acs_invalid_chanlist(dev, apdev):
+    """Automatic channel selection with invalid chanlist"""
+    force_prev_ap_on_24g(apdev[0])
+    params = hostapd.wpa2_params(ssid="test-acs", passphrase="12345678")
+    params['channel'] = '0'
+    params['chanlist'] = '15-18'
+    hapd = hostapd.add_ap(apdev[0], params, no_enable=True)
+    res = hapd.request("ENABLE")
+    if "OK" in res:
+        raise Exception("ENABLE command succeeded unexpectedly")
+
 def test_ap_multi_bss_acs(dev, apdev):
     """hostapd start with a multi-BSS configuration file using ACS"""
     skip_with_fips(dev[0])
@@ -160,12 +171,7 @@ def test_ap_acs_5ghz(dev, apdev):
         dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
         dev[0].wait_regdom(country_ie=True)
     finally:
-        if hapd:
-            hapd.request("DISABLE")
-        dev[0].disconnect_and_stop_scan()
-        hostapd.cmd_execute(apdev[0], ['iw', 'reg', 'set', '00'])
-        dev[0].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=0.5)
-        dev[0].flush_scan_cache()
+        clear_regdom(hapd, dev)
 
 def test_ap_acs_5ghz_40mhz(dev, apdev):
     """Automatic channel selection on 5 GHz for 40 MHz channel"""
@@ -190,12 +196,7 @@ def test_ap_acs_5ghz_40mhz(dev, apdev):
         dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
         dev[0].wait_regdom(country_ie=True)
     finally:
-        if hapd:
-            hapd.request("DISABLE")
-        dev[0].disconnect_and_stop_scan()
-        hostapd.cmd_execute(apdev[0], ['iw', 'reg', 'set', '00'])
-        dev[0].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=0.5)
-        dev[0].flush_scan_cache()
+        clear_regdom(hapd, dev)
 
 def test_ap_acs_vht(dev, apdev):
     """Automatic channel selection for VHT"""
@@ -222,12 +223,7 @@ def test_ap_acs_vht(dev, apdev):
         dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
         dev[0].wait_regdom(country_ie=True)
     finally:
-        if hapd:
-            hapd.request("DISABLE")
-        dev[0].disconnect_and_stop_scan()
-        hostapd.cmd_execute(apdev[0], ['iw', 'reg', 'set', '00'])
-        dev[0].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=0.5)
-        dev[0].flush_scan_cache()
+        clear_regdom(hapd, dev)
 
 def test_ap_acs_vht40(dev, apdev):
     """Automatic channel selection for VHT40"""
@@ -256,12 +252,7 @@ def test_ap_acs_vht40(dev, apdev):
         dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
         dev[0].wait_regdom(country_ie=True)
     finally:
-        if hapd:
-            hapd.request("DISABLE")
-        dev[0].disconnect_and_stop_scan()
-        hostapd.cmd_execute(apdev[0], ['iw', 'reg', 'set', '00'])
-        dev[0].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=0.5)
-        dev[0].flush_scan_cache()
+        clear_regdom(hapd, dev)
 
 def test_ap_acs_vht160(dev, apdev):
     """Automatic channel selection for VHT160"""
@@ -292,12 +283,7 @@ def test_ap_acs_vht160(dev, apdev):
             dev[0].connect("test-acs", psk="12345678", scan_freq=freq)
             dev[0].wait_regdom(country_ie=True)
     finally:
-        if hapd:
-            hapd.request("DISABLE")
-        dev[0].disconnect_and_stop_scan()
-        hostapd.cmd_execute(apdev[0], ['iw', 'reg', 'set', '00'])
-        dev[0].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=0.5)
-        dev[0].flush_scan_cache()
+        clear_regdom(hapd, dev)
 
 def test_ap_acs_vht160_scan_disable(dev, apdev):
     """Automatic channel selection for VHT160 and DISABLE during scan"""
@@ -413,6 +399,42 @@ def test_ap_acs_dfs(dev, apdev, params):
 
         freq = int(hapd.get_status_field("freq"))
         if freq not in [5260, 5280, 5300, 5320]:
+            raise Exception("Unexpected frequency: %d" % freq)
+
+        dev[0].connect("test-acs", psk="12345678", scan_freq=str(freq))
+        dev[0].wait_regdom(country_ie=True)
+    finally:
+        if hapd:
+            hapd.request("DISABLE")
+        dev[0].disconnect_and_stop_scan()
+        hostapd.cmd_execute(apdev[0], ['iw', 'reg', 'set', '00'])
+        dev[0].wait_event(["CTRL-EVENT-REGDOM-CHANGE"], timeout=0.5)
+        dev[0].flush_scan_cache()
+
+def test_ap_acs_exclude_dfs(dev, apdev, params):
+    """Automatic channel selection, exclude DFS"""
+    try:
+        hapd = None
+        force_prev_ap_on_5g(apdev[0])
+        params = hostapd.wpa2_params(ssid="test-acs", passphrase="12345678")
+        params['hw_mode'] = 'a'
+        params['channel'] = '0'
+        params['ht_capab'] = '[HT40+]'
+        params['country_code'] = 'US'
+        params['ieee80211d'] = '1'
+        params['ieee80211h'] = '1'
+        params['acs_num_scans'] = '1'
+        params['acs_exclude_dfs'] = '1'
+        hapd = hostapd.add_ap(apdev[0], params, wait_enabled=False)
+        wait_acs(hapd)
+
+        state = hapd.get_status_field("state")
+        if state != "ENABLED":
+            raise Exception("Unexpected interface state")
+
+        freq = int(hapd.get_status_field("freq"))
+        if freq in [5260, 5280, 5300, 5320,
+                    5500, 5520, 5540, 5560, 5580, 5600, 5620, 5640, 5660, 5680]:
             raise Exception("Unexpected frequency: %d" % freq)
 
         dev[0].connect("test-acs", psk="12345678", scan_freq=str(freq))

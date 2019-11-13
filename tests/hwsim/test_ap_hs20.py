@@ -795,7 +795,7 @@ def eap_test(dev, ap, eap_params, method, user, release=0):
     params['nai_realm'] = ["0,example.com," + eap_params]
     if release > 0:
         params['hs20_release'] = str(release)
-    hostapd.add_ap(ap, params)
+    hapd = hostapd.add_ap(ap, params)
 
     dev.hs20_enable()
     dev.add_cred_values({'realm': "example.com",
@@ -804,6 +804,7 @@ def eap_test(dev, ap, eap_params, method, user, release=0):
                          'password': "password"})
     interworking_select(dev, bssid, freq="2412")
     interworking_connect(dev, bssid, method)
+    return hapd
 
 @remote_compatible
 def test_ap_hs20_eap_unknown(dev, apdev):
@@ -1469,7 +1470,7 @@ def _test_ap_hs20_gas_with_another_ap_while_using_pmf(dev, apdev):
     bssid = apdev[0]['bssid']
     params = hs20_ap_params()
     params['hessid'] = bssid
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     bssid2 = apdev[1]['bssid']
     params = hs20_ap_params()
@@ -1487,6 +1488,7 @@ def _test_ap_hs20_gas_with_another_ap_while_using_pmf(dev, apdev):
     interworking_select(dev[0], bssid, "home", freq="2412")
     interworking_connect(dev[0], bssid, "TTLS")
     dev[0].dump_monitor()
+    hapd.wait_sta()
 
     logger.info("Verifying GAS query with same AP while associated")
     dev[0].request("ANQP_GET " + bssid + " 263")
@@ -1519,6 +1521,7 @@ def test_ap_hs20_gas_frag_while_associated(dev, apdev):
                                  'domain': "example.com"})
     interworking_select(dev[0], bssid, "home", freq="2412")
     interworking_connect(dev[0], bssid, "TTLS")
+    hapd.wait_sta()
 
     logger.info("Verifying GAS query while associated")
     dev[0].request("FETCH_ANQP")
@@ -2433,10 +2436,10 @@ def test_ap_hs20_deauth_req_ess(dev, apdev):
 
 def _test_ap_hs20_deauth_req_ess(dev, apdev):
     dev[0].request("SET pmf 2")
-    eap_test(dev[0], apdev[0], "21[3:26]", "TTLS", "user")
+    hapd = eap_test(dev[0], apdev[0], "21[3:26]", "TTLS", "user")
     dev[0].dump_monitor()
     addr = dev[0].p2p_interface_addr()
-    hapd = hostapd.Hostapd(apdev[0]['ifname'])
+    hapd.wait_sta()
     hapd.request("HS20_DEAUTH_REQ " + addr + " 1 120 http://example.com/")
     ev = dev[0].wait_event(["HS20-DEAUTH-IMMINENT-NOTICE"])
     if ev is None:
@@ -2463,10 +2466,10 @@ def test_ap_hs20_deauth_req_bss(dev, apdev):
 
 def _test_ap_hs20_deauth_req_bss(dev, apdev):
     dev[0].request("SET pmf 2")
-    eap_test(dev[0], apdev[0], "21[3:26]", "TTLS", "user")
+    hapd = eap_test(dev[0], apdev[0], "21[3:26]", "TTLS", "user")
     dev[0].dump_monitor()
     addr = dev[0].p2p_interface_addr()
-    hapd = hostapd.Hostapd(apdev[0]['ifname'])
+    hapd.wait_sta()
     hapd.request("HS20_DEAUTH_REQ " + addr + " 0 120 http://example.com/")
     ev = dev[0].wait_event(["HS20-DEAUTH-IMMINENT-NOTICE"])
     if ev is None:
@@ -2518,7 +2521,7 @@ def test_ap_hs20_deauth_req_without_pmf(dev, apdev):
     """Hotspot 2.0 connection and deauthentication request without PMF"""
     check_eap_capa(dev[0], "MSCHAPV2")
     dev[0].request("SET pmf 0")
-    eap_test(dev[0], apdev[0], "21[3:26]", "TTLS", "user", release=1)
+    hapd = eap_test(dev[0], apdev[0], "21[3:26]", "TTLS", "user", release=1)
     dev[0].dump_monitor()
     id = int(dev[0].get_status_field("id"))
     dev[0].set_network(id, "ieee80211w", "0")
@@ -2527,7 +2530,7 @@ def test_ap_hs20_deauth_req_without_pmf(dev, apdev):
     dev[0].select_network(id, freq=2412)
     dev[0].wait_connected()
     addr = dev[0].own_addr()
-    hapd = hostapd.Hostapd(apdev[0]['ifname'])
+    hapd.wait_sta()
     hapd.request("HS20_DEAUTH_REQ " + addr + " 1 120 http://example.com/")
     ev = dev[0].wait_event(["HS20-DEAUTH-IMMINENT-NOTICE"], timeout=0.2)
     if ev is not None:
@@ -6374,3 +6377,21 @@ def test_ap_hs20_missing_pmf(dev, apdev):
         raise Exception("Association rejection not reported")
     if "status_code=31" not in ev:
         raise Exception("Unexpected rejection reason: " + ev)
+
+def test_ap_hs20_open_osu_association(dev, apdev):
+    """Hotspot 2.0 open OSU association"""
+    try:
+        run_ap_hs20_open_osu_association(dev, apdev)
+    finally:
+        dev[0].request("VENDOR_ELEM_REMOVE 13 *")
+
+def run_ap_hs20_open_osu_association(dev, apdev):
+    params = {"ssid": "HS 2.0 OSU open"}
+    hostapd.add_ap(apdev[0], params)
+    dev[0].connect("HS 2.0 OSU open", key_mgmt="NONE", scan_freq="2412")
+    dev[0].request("REMOVE_NETWORK all")
+    dev[0].wait_disconnected()
+    dev[0].dump_monitor()
+    # Test with unexpected Hotspot 2.0 Indication element in Assoc Req
+    dev[0].request("VENDOR_ELEM_ADD 13 dd07506f9a10220000")
+    dev[0].connect("HS 2.0 OSU open", key_mgmt="NONE", scan_freq="2412")

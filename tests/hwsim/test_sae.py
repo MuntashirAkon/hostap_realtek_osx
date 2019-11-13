@@ -92,6 +92,18 @@ def test_sae_password_ffc(dev, apdev):
 @remote_compatible
 def test_sae_pmksa_caching(dev, apdev):
     """SAE and PMKSA caching"""
+    run_sae_pmksa_caching(dev, apdev)
+
+@remote_compatible
+def test_sae_pmksa_caching_pmkid(dev, apdev):
+    """SAE and PMKSA caching (PMKID in AssocReq after SAE)"""
+    try:
+        dev[0].set("sae_pmkid_in_assoc", "1")
+        run_sae_pmksa_caching(dev, apdev)
+    finally:
+        dev[0].set("sae_pmkid_in_assoc", "0")
+
+def run_sae_pmksa_caching(dev, apdev):
     if "SAE" not in dev[0].get_capability("auth_alg"):
         raise HwsimSkip("SAE not supported")
     params = hostapd.wpa2_params(ssid="test-sae",
@@ -156,13 +168,13 @@ def test_sae_groups(dev, apdev):
         logger.info("Add Brainpool EC groups since OpenSSL is new enough")
         sae_groups += [27, 28, 29, 30]
     heavy_groups = [14, 15, 16]
-    suitable_groups = [15, 16, 17, 18, 19, 20, 21, 28, 29, 30]
+    suitable_groups = [15, 16, 17, 18, 19, 20, 21]
     groups = [str(g) for g in sae_groups]
     params = hostapd.wpa2_params(ssid="test-sae-groups",
                                  passphrase="12345678")
     params['wpa_key_mgmt'] = 'SAE'
     params['sae_groups'] = ' '.join(groups)
-    hostapd.add_ap(apdev[0], params)
+    hapd = hostapd.add_ap(apdev[0], params)
 
     for g in groups:
         logger.info("Testing SAE group " + g)
@@ -194,6 +206,11 @@ def test_sae_groups(dev, apdev):
                 raise Exception("Connection timed out with group " + g)
         if dev[0].get_status_field('sae_group') != g:
             raise Exception("Expected SAE group not used")
+        pmksa = dev[0].get_pmksa(hapd.own_addr())
+        if not pmksa:
+            raise Exception("No PMKSA cache entry added")
+        if pmksa['pmkid'] == '00000000000000000000000000000000':
+            raise Exception("All zeros PMKID derived for group %s" % g)
         dev[0].remove_network(id)
         dev[0].wait_disconnected()
         dev[0].dump_monitor()
@@ -732,6 +749,168 @@ def test_sae_proto_ffc(dev, apdev):
         hapd.set("ext_mgmt_frame_handling", "0")
         hapd.dump_monitor()
 
+
+def test_sae_proto_commit_delayed(dev, apdev):
+    """SAE protocol testing - Commit delayed"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae",
+                                 passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    hapd = hostapd.add_ap(apdev[0], params)
+    bssid = apdev[0]['bssid']
+
+    dev[0].request("SET sae_groups 19")
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    hapd.set("ext_mgmt_frame_handling", "1")
+    dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
+                   scan_freq="2412", wait_connect=False)
+
+    logger.info("Commit")
+    for i in range(0, 10):
+        req = hapd.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out (commit)")
+        if req['subtype'] == 11:
+            break
+        req = None
+    if not req:
+        raise Exception("Authentication frame (commit) not received")
+
+    hapd.dump_monitor()
+    time.sleep(2.5)
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+
+    logger.info("Commit/Confirm")
+    for i in range(0, 10):
+        req = hapd.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out (confirm)")
+        if req['subtype'] == 11:
+            trans, = struct.unpack('<H', req['payload'][2:4])
+            if trans == 1:
+                logger.info("Extra Commit")
+                hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+                continue
+            break
+        req = None
+    if not req:
+        raise Exception("Authentication frame (confirm) not received")
+
+    hapd.dump_monitor()
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+
+    logger.info("Association Request")
+    for i in range(0, 10):
+        req = hapd.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out (AssocReq)")
+        if req['subtype'] == 0:
+            break
+        req = None
+    if not req:
+        raise Exception("Association Request frame not received")
+
+    hapd.dump_monitor()
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+    ev = hapd.wait_event(["MGMT-TX-STATUS"], timeout=5)
+    if ev is None:
+        raise Exception("Management frame TX status not reported (1)")
+    if "stype=1 ok=1" not in ev:
+        raise Exception("Unexpected management frame TX status (1): " + ev)
+    cmd = "MGMT_TX_STATUS_PROCESS %s" % (" ".join(ev.split(' ')[1:4]))
+    if "OK" not in hapd.request(cmd):
+        raise Exception("MGMT_TX_STATUS_PROCESS failed")
+
+    hapd.set("ext_mgmt_frame_handling", "0")
+
+    dev[0].wait_connected()
+
+def test_sae_proto_commit_replay(dev, apdev):
+    """SAE protocol testing - Commit replay"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae",
+                                 passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    hapd = hostapd.add_ap(apdev[0], params)
+    bssid = apdev[0]['bssid']
+
+    dev[0].request("SET sae_groups 19")
+
+    dev[0].scan_for_bss(bssid, freq=2412)
+    hapd.set("ext_mgmt_frame_handling", "1")
+    dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE",
+                   scan_freq="2412", wait_connect=False)
+
+    logger.info("Commit")
+    for i in range(0, 10):
+        req = hapd.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out (commit)")
+        if req['subtype'] == 11:
+            break
+        req = None
+    if not req:
+        raise Exception("Authentication frame (commit) not received")
+
+    hapd.dump_monitor()
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+    logger.info("Replay Commit")
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+
+    logger.info("Confirm")
+    for i in range(0, 10):
+        req = hapd.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out (confirm)")
+        if req['subtype'] == 11:
+            trans, = struct.unpack('<H', req['payload'][2:4])
+            if trans == 1:
+                logger.info("Extra Commit")
+                hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+                continue
+            break
+        req = None
+    if not req:
+        raise Exception("Authentication frame (confirm) not received")
+
+    hapd.dump_monitor()
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+
+    logger.info("Association Request")
+    for i in range(0, 10):
+        req = hapd.mgmt_rx()
+        if req is None:
+            raise Exception("MGMT RX wait timed out (AssocReq)")
+        if req['subtype'] == 0:
+            break
+        req = None
+    if not req:
+        raise Exception("Association Request frame not received")
+
+    hapd.dump_monitor()
+    hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
+    for i in range(0, 10):
+        ev = hapd.wait_event(["MGMT-TX-STATUS"], timeout=5)
+        if ev is None:
+            raise Exception("Management frame TX status not reported (1)")
+        if "stype=11 ok=1" in ev:
+            continue
+        if "stype=12 ok=1" in ev:
+            continue
+        if "stype=1 ok=1" not in ev:
+            raise Exception("Unexpected management frame TX status (1): " + ev)
+        cmd = "MGMT_TX_STATUS_PROCESS %s" % (" ".join(ev.split(' ')[1:4]))
+        if "OK" not in hapd.request(cmd):
+            raise Exception("MGMT_TX_STATUS_PROCESS failed")
+        break
+
+    hapd.set("ext_mgmt_frame_handling", "0")
+
+    dev[0].wait_connected()
+
 def test_sae_proto_confirm_replay(dev, apdev):
     """SAE protocol testing - Confirm replay"""
     if "SAE" not in dev[0].get_capability("auth_alg"):
@@ -759,10 +938,6 @@ def test_sae_proto_confirm_replay(dev, apdev):
         req = None
     if not req:
         raise Exception("Authentication frame (commit) not received")
-
-    bssid = hapd.own_addr().replace(':', '')
-    addr = dev[0].own_addr().replace(':', '')
-    hdr = "b0003a01" + bssid + addr + bssid + "1000"
 
     hapd.dump_monitor()
     hapd.request("MGMT_RX_PROCESS freq=2412 datarate=0 ssi_signal=-30 frame=" + binascii.hexlify(req['frame']).decode())
@@ -1657,3 +1832,233 @@ def run_sae_anti_clogging_during_attack(dev, apdev):
         raise Exception("Real station(1) did not get connected")
     if count < 1:
         raise Exception("Too few token responses in third round: %d" % count)
+
+def test_sae_sync(dev, apdev):
+    """SAE dot11RSNASAESync"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_sync'] = '1'
+    hostapd.add_ap(apdev[0], params)
+
+    # TODO: More complete dot11RSNASAESync testing. For now, this is really only
+    # checking that sae_sync config parameter is accepted.
+    dev[0].request("SET sae_groups ")
+    dev[1].request("SET sae_groups ")
+    id = {}
+    for i in range(0, 2):
+        dev[i].scan(freq="2412")
+        id[i] = dev[i].connect("test-sae", psk="12345678", key_mgmt="SAE",
+                               scan_freq="2412", only_add_network=True)
+    for i in range(0, 2):
+        dev[i].select_network(id[i])
+    for i in range(0, 2):
+        dev[i].wait_connected(timeout=10)
+
+def test_sae_confirm_immediate(dev, apdev):
+    """SAE and AP sending Confirm message without waiting STA"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae", passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_confirm_immediate'] = '1'
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    dev[0].request("SET sae_groups ")
+    dev[0].connect("test-sae", psk="12345678", key_mgmt="SAE", scan_freq="2412")
+
+def test_sae_pwe_group_19(dev, apdev):
+    """SAE PWE derivation options with group 19"""
+    run_sae_pwe_group(dev, apdev, 19)
+
+def test_sae_pwe_group_20(dev, apdev):
+    """SAE PWE derivation options with group 20"""
+    run_sae_pwe_group(dev, apdev, 20)
+
+def test_sae_pwe_group_21(dev, apdev):
+    """SAE PWE derivation options with group 21"""
+    run_sae_pwe_group(dev, apdev, 21)
+
+def test_sae_pwe_group_25(dev, apdev):
+    """SAE PWE derivation options with group 25"""
+    run_sae_pwe_group(dev, apdev, 25)
+
+def test_sae_pwe_group_28(dev, apdev):
+    """SAE PWE derivation options with group 28"""
+    run_sae_pwe_group(dev, apdev, 28)
+
+def test_sae_pwe_group_29(dev, apdev):
+    """SAE PWE derivation options with group 29"""
+    run_sae_pwe_group(dev, apdev, 29)
+
+def test_sae_pwe_group_30(dev, apdev):
+    """SAE PWE derivation options with group 30"""
+    run_sae_pwe_group(dev, apdev, 30)
+
+def test_sae_pwe_group_1(dev, apdev):
+    """SAE PWE derivation options with group 1"""
+    run_sae_pwe_group(dev, apdev, 1)
+
+def test_sae_pwe_group_2(dev, apdev):
+    """SAE PWE derivation options with group 2"""
+    run_sae_pwe_group(dev, apdev, 2)
+
+def test_sae_pwe_group_5(dev, apdev):
+    """SAE PWE derivation options with group 5"""
+    run_sae_pwe_group(dev, apdev, 5)
+
+def test_sae_pwe_group_14(dev, apdev):
+    """SAE PWE derivation options with group 14"""
+    run_sae_pwe_group(dev, apdev, 14)
+
+def test_sae_pwe_group_15(dev, apdev):
+    """SAE PWE derivation options with group 15"""
+    run_sae_pwe_group(dev, apdev, 15)
+
+def test_sae_pwe_group_16(dev, apdev):
+    """SAE PWE derivation options with group 16"""
+    run_sae_pwe_group(dev, apdev, 16)
+
+def test_sae_pwe_group_22(dev, apdev):
+    """SAE PWE derivation options with group 22"""
+    run_sae_pwe_group(dev, apdev, 22)
+
+def test_sae_pwe_group_23(dev, apdev):
+    """SAE PWE derivation options with group 23"""
+    run_sae_pwe_group(dev, apdev, 23)
+
+def test_sae_pwe_group_24(dev, apdev):
+    """SAE PWE derivation options with group 24"""
+    run_sae_pwe_group(dev, apdev, 24)
+
+def start_sae_pwe_ap(apdev, group, sae_pwe):
+    params = hostapd.wpa2_params(ssid="sae-pwe", passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_groups'] = str(group)
+    params['sae_pwe'] = str(sae_pwe)
+    return hostapd.add_ap(apdev, params)
+
+def run_sae_pwe_group(dev, apdev, group):
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    tls = dev[0].request("GET tls_library")
+    if group in [27, 28, 29, 30]:
+        if tls.startswith("OpenSSL") and "run=OpenSSL 1." in tls:
+            logger.info("Add Brainpool EC groups since OpenSSL is new enough")
+        else:
+            raise HwsimSkip("Brainpool curve not supported")
+    start_sae_pwe_ap(apdev[0], group, 2)
+    try:
+        check_sae_pwe_group(dev[0], group, 0)
+        check_sae_pwe_group(dev[0], group, 1)
+        check_sae_pwe_group(dev[0], group, 2)
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")
+
+def check_sae_pwe_group(dev, group, sae_pwe):
+    dev.set("sae_groups", str(group))
+    dev.set("sae_pwe", str(sae_pwe))
+    dev.connect("sae-pwe", psk="12345678", key_mgmt="SAE", scan_freq="2412")
+    dev.request("REMOVE_NETWORK all")
+    dev.wait_disconnected()
+    dev.dump_monitor()
+
+def test_sae_pwe_h2e_only_ap(dev, apdev):
+    """SAE PWE derivation with H2E-only AP"""
+    start_sae_pwe_ap(apdev[0], 19, 1)
+    try:
+        check_sae_pwe_group(dev[0], 19, 1)
+        check_sae_pwe_group(dev[0], 19, 2)
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")
+
+    dev[0].connect("sae-pwe", psk="12345678", key_mgmt="SAE", scan_freq="2412",
+                   wait_connect=False)
+    ev = dev[0].wait_event(["CTRL-EVENT-NETWORK-NOT-FOUND"], timeout=10)
+    if ev is None:
+        raise Exception("No indication of mismatching network seen")
+
+def test_sae_pwe_loop_only_ap(dev, apdev):
+    """SAE PWE derivation with loop-only AP"""
+    start_sae_pwe_ap(apdev[0], 19, 0)
+    try:
+        check_sae_pwe_group(dev[0], 19, 0)
+        check_sae_pwe_group(dev[0], 19, 2)
+        dev[0].set("sae_pwe", "1")
+        dev[0].connect("sae-pwe", psk="12345678", key_mgmt="SAE",
+                       scan_freq="2412", wait_connect=False)
+        ev = dev[0].wait_event(["CTRL-EVENT-NETWORK-NOT-FOUND"], timeout=10)
+        if ev is None:
+            raise Exception("No indication of mismatching network seen")
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")
+
+def test_sae_h2e_rejected_groups(dev, apdev):
+    """SAE H2E and rejected groups indication"""
+    params = hostapd.wpa2_params(ssid="sae-pwe", passphrase="12345678")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_groups'] = "19"
+    params['sae_pwe'] = "1"
+    hapd = hostapd.add_ap(apdev[0], params)
+    try:
+        dev[0].set("sae_groups", "21 20 19")
+        dev[0].set("sae_pwe", "1")
+        dev[0].connect("sae-pwe", psk="12345678", key_mgmt="SAE",
+                       scan_freq="2412")
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")
+
+def test_sae_h2e_password_id(dev, apdev):
+    """SAE H2E and password identifier"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_pwe'] = '1'
+    params['sae_password'] = 'secret|id=pw id'
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    try:
+        dev[0].request("SET sae_groups ")
+        dev[0].set("sae_pwe", "1")
+        dev[0].connect("test-sae", sae_password="secret",
+                       sae_password_id="pw id",
+                       key_mgmt="SAE", scan_freq="2412")
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")
+
+def test_sae_auth_restart(dev, apdev):
+    """SAE and authentication restarts with H2E/looping"""
+    if "SAE" not in dev[0].get_capability("auth_alg"):
+        raise HwsimSkip("SAE not supported")
+    params = hostapd.wpa2_params(ssid="test-sae")
+    params['wpa_key_mgmt'] = 'SAE'
+    params['sae_pwe'] = '2'
+    params['sae_password'] = 'secret|id=pw id'
+    hapd = hostapd.add_ap(apdev[0], params)
+
+    try:
+        dev[0].request("SET sae_groups ")
+        for pwe in [1, 0, 1]:
+            dev[0].set("sae_pwe", str(pwe))
+            dev[0].connect("test-sae", sae_password="secret",
+                           sae_password_id="pw id",
+                           key_mgmt="SAE", scan_freq="2412")
+            # Disconnect without hostapd removing the STA entry so that the
+            # following SAE authentication instance starts with an existing
+            # STA entry that has maintained some SAE state.
+            hapd.set("ext_mgmt_frame_handling", "1")
+            dev[0].request("REMOVE_NETWORK all")
+            req = hapd.mgmt_rx()
+            dev[0].wait_disconnected()
+            dev[0].dump_monitor()
+            hapd.set("ext_mgmt_frame_handling", "0")
+    finally:
+        dev[0].set("sae_groups", "")
+        dev[0].set("sae_pwe", "0")

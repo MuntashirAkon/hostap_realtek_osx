@@ -838,6 +838,8 @@ class WpaSupplicant:
         raise Exception("P2P_CONNECT failed")
 
     def _wait_event(self, mon, pfx, events, timeout):
+        if not isinstance(events, list):
+            raise Exception("WpaSupplicant._wait_event() called with incorrect events argument type")
         start = os.times()[4]
         while True:
             while mon.pending():
@@ -864,6 +866,8 @@ class WpaSupplicant:
                                 events, timeout)
 
     def wait_group_event(self, events, timeout=10):
+        if not isinstance(events, list):
+            raise Exception("WpaSupplicant.wait_group_event() called with incorrect events argument type")
         if self.group_ifname and self.group_ifname != self.ifname:
             if self.gctrl_mon is None:
                 return None
@@ -1058,13 +1062,16 @@ class WpaSupplicant:
             self.set_network(id, "ssid", ssid2)
 
         quoted = ["psk", "identity", "anonymous_identity", "password",
+                  "machine_identity", "machine_password",
                   "ca_cert", "client_cert", "private_key",
                   "private_key_passwd", "ca_cert2", "client_cert2",
                   "private_key2", "phase1", "phase2", "domain_suffix_match",
                   "altsubject_match", "subject_match", "pac_file", "dh_file",
                   "bgscan", "ht_mcs", "id_str", "openssl_ciphers",
                   "domain_match", "dpp_connector", "sae_password",
-                  "sae_password_id", "check_cert_subject"]
+                  "sae_password_id", "check_cert_subject",
+                  "machine_ca_cert", "machine_client_cert",
+                  "machine_private_key", "machine_phase2"]
         for field in quoted:
             if field in kwargs and kwargs[field]:
                 self.set_network_quoted(id, field, kwargs[field])
@@ -1451,7 +1458,7 @@ class WpaSupplicant:
     def dpp_auth_init(self, peer=None, uri=None, conf=None, configurator=None,
                       extra=None, own=None, role=None, neg_freq=None,
                       ssid=None, passphrase=None, expect_fail=False,
-                      tcp_addr=None, tcp_port=None):
+                      tcp_addr=None, tcp_port=None, conn_status=False):
         cmd = "DPP_AUTH_INIT"
         if peer is None:
             peer = self.dpp_qr_code(uri)
@@ -1476,6 +1483,8 @@ class WpaSupplicant:
             cmd += " tcp_addr=" + tcp_addr
         if tcp_port:
             cmd += " tcp_port=" + tcp_port
+        if conn_status:
+            cmd += " conn_status=1"
         res = self.request(cmd)
         if expect_fail:
             if "FAIL" not in res:

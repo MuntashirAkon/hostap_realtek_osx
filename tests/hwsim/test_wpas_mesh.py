@@ -16,11 +16,11 @@ import binascii
 import hwsim_utils
 import hostapd
 from wpasupplicant import WpaSupplicant
-from utils import HwsimSkip, alloc_fail, fail_test, wait_fail_trigger
+from utils import HwsimSkip, alloc_fail, fail_test, wait_fail_trigger, \
+    radiotap_build, start_monitor, stop_monitor
 from tshark import run_tshark, run_tshark_json
 from test_ap_ht import set_world_reg
-from test_sae import radiotap_build, start_monitor, stop_monitor, \
-    build_sae_commit, sae_rx_commit_token_req
+from test_sae import build_sae_commit, sae_rx_commit_token_req
 from hwsim_utils import set_group_map
 
 def check_mesh_support(dev, secure=False):
@@ -877,8 +877,21 @@ def test_wpas_mesh_max_peering(dev, apdev, params):
             out = run_tshark_json(capfile, filt + " && wlan.sa == " + addr)
             pkts = json.loads(out)
             for pkt in pkts:
+                wlan = pkt["_source"]["layers"]["wlan"]
+                if "wlan.tagged.all" not in wlan:
+                    continue
+
+                tagged = wlan["wlan.tagged.all"]
+                if "wlan.tag" not in tagged:
+                    continue
+
+                wlan_tag = tagged["wlan.tag"]
+                if "wlan.mesh.config.ps_protocol_raw" not in wlan_tag:
+                    continue
+
                 frame = pkt["_source"]["layers"]["frame_raw"][0]
-                cap = int(frame[-2:], 16)
+                cap_offset = wlan_tag["wlan.mesh.config.ps_protocol_raw"][1] + 6
+                cap = int(frame[(cap_offset * 2):(cap_offset * 2 + 2)], 16)
                 if cap & 0x01:
                     one[idx] += 1
                 else:
@@ -1655,17 +1668,21 @@ def test_wpas_mesh_pmksa_caching_ext(dev, apdev):
 
     dev[1].mesh_group_remove()
     check_mesh_group_removed(dev[1])
+    check_mesh_peer_disconnected(dev[0])
     dev[0].dump_monitor()
     dev[1].dump_monitor()
     res = dev[1].get_pmksa(addr0)
     if res is not None:
         raise Exception("Unexpected PMKSA cache entry remaining")
 
+    time.sleep(0.1)
     if "OK" not in dev[1].request("MESH_PMKSA_ADD " + res2):
         raise Exception("MESH_PMKSA_ADD failed")
     dev[1].mesh_group_add(id)
     check_mesh_group_added(dev[1])
     check_mesh_peer_connected(dev[1])
+    check_mesh_peer_connected(dev[0])
+    time.sleep(0.1)
     dev[0].dump_monitor()
     dev[1].dump_monitor()
     pmksa1b = dev[1].get_pmksa(addr0)

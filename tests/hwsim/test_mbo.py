@@ -321,6 +321,7 @@ def test_mbo_cell_capa_update_pmf(dev, apdev):
 
     dev[0].connect(ssid, psk=passphrase, key_mgmt="WPA-PSK-SHA256",
                    proto="WPA2", ieee80211w="2", scan_freq="2412")
+    hapd.wait_sta()
 
     addr = dev[0].own_addr()
     sta = hapd.get_sta(addr)
@@ -538,6 +539,22 @@ def test_mbo_without_pmf(dev, apdev):
             pass
         else:
             raise
+
+def test_mbo_without_pmf_workaround(dev, apdev):
+    """MBO and WPA2 without PMF on misbehaving AP"""
+    ssid = "test-wnm-mbo"
+    params = {'ssid': ssid, "wpa": '2',
+              "wpa_key_mgmt": "WPA-PSK", "rsn_pairwise": "CCMP",
+              "wpa_passphrase": "12345678",
+              "vendor_elements": "dd07506f9a16010100"}
+    hapd = hostapd.add_ap(apdev[0], params)
+    dev[0].connect(ssid, psk="12345678", key_mgmt="WPA-PSK",
+                   proto="WPA2", ieee80211w="1", scan_freq="2412")
+    hapd.wait_sta()
+    sta = hapd.get_sta(dev[0].own_addr())
+    ext_capab = bytearray(binascii.unhexlify(sta['ext_capab']))
+    if ext_capab[2] & 0x08:
+        raise Exception("STA did not disable BSS Transition capability")
 
 def check_mbo_anqp(dev, bssid, cell_data_conn_pref):
     if "OK" not in dev.request("ANQP_GET " + bssid + " 272,mbo:2"):

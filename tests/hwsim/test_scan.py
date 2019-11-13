@@ -162,6 +162,11 @@ def test_scan_bss_expiration_count(dev, apdev):
     if bssid not in dev[0].request("SCAN_RESULTS"):
         raise Exception("BSS not found in initial scan")
     hapd.request("DISABLE")
+    # Try to give enough time for hostapd to have stopped mac80211 from
+    # beaconing before checking a new scan. This is needed with UML time travel
+    # testing.
+    hapd.ping()
+    time.sleep(0.2)
     dev[0].scan(freq="2412", only_new=True)
     if bssid not in dev[0].request("SCAN_RESULTS"):
         raise Exception("BSS not found in first scan without match")
@@ -1881,3 +1886,20 @@ def test_connect_mbssid_open_1(dev, apdev):
     # able to start connection attempt.
     dev[0].request("REMOVE_NETWORK all")
     dev[0].dump_monitor()
+
+def test_scan_only_one(dev, apdev):
+    """Test that scanning with a single active AP only returns that one"""
+    dev[0].flush_scan_cache()
+    hostapd.add_ap(apdev[0], {"ssid": "test-scan"})
+    bssid = apdev[0]['bssid']
+
+    check_scan(dev[0], "use_id=1", test_busy=True)
+    dev[0].scan_for_bss(bssid, freq="2412")
+
+    status, stdout = hostapd.cmd_execute(dev[0], ['iw', dev[0].ifname, 'scan', 'dump'])
+    if status != 0:
+        raise Exception("iw scan dump failed with code %d" % status)
+    lines = stdout.split('\n')
+    entries = len(list(filter(lambda x: x.startswith('BSS '), lines)))
+    if entries != 1:
+        raise Exception("expected to find 1 BSS entry, got %d" % entries)

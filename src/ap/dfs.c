@@ -515,6 +515,7 @@ static int set_dfs_state(struct hostapd_iface *iface, int freq, int ht_enabled,
 	int n_chans = 1, i;
 	struct hostapd_hw_modes *mode;
 	int frequency = freq;
+	int frequency2 = 0;
 	int ret = 0;
 
 	mode = iface->current_mode;
@@ -542,6 +543,11 @@ static int set_dfs_state(struct hostapd_iface *iface, int freq, int ht_enabled,
 		n_chans = 4;
 		frequency = cf1 - 30;
 		break;
+	case CHAN_WIDTH_80P80:
+		n_chans = 4;
+		frequency = cf1 - 30;
+		frequency2 = cf2 - 30;
+		break;
 	case CHAN_WIDTH_160:
 		n_chans = 8;
 		frequency = cf1 - 70;
@@ -557,6 +563,11 @@ static int set_dfs_state(struct hostapd_iface *iface, int freq, int ht_enabled,
 	for (i = 0; i < n_chans; i++) {
 		ret += set_dfs_state_freq(iface, frequency, state);
 		frequency = frequency + 20;
+
+		if (chan_width == CHAN_WIDTH_80P80) {
+			ret += set_dfs_state_freq(iface, frequency2, state);
+			frequency2 = frequency2 + 20;
+		}
 	}
 
 	return ret;
@@ -960,6 +971,8 @@ static int hostapd_dfs_start_channel_switch(struct hostapd_iface *iface)
 				      iface->conf->hw_mode,
 				      channel->freq,
 				      channel->chan,
+				      iface->conf->enable_edmg,
+				      iface->conf->edmg_channel,
 				      iface->conf->ieee80211n,
 				      iface->conf->ieee80211ac,
 				      iface->conf->ieee80211ax,
@@ -1093,11 +1106,18 @@ int hostapd_dfs_start_cac(struct hostapd_iface *iface, int freq,
 			  int ht_enabled, int chan_offset, int chan_width,
 			  int cf1, int cf2)
 {
+	/* This is called when the driver indicates that an offloaded DFS has
+	 * started CAC. */
+	hostapd_set_state(iface, HAPD_IFACE_DFS);
+	/* TODO: How to check CAC time for ETSI weather channels? */
+	iface->dfs_cac_ms = 60000;
 	wpa_msg(iface->bss[0]->msg_ctx, MSG_INFO, DFS_EVENT_CAC_START
 		"freq=%d chan=%d chan_offset=%d width=%d seg0=%d "
 		"seg1=%d cac_time=%ds",
-		freq, (freq - 5000) / 5, chan_offset, chan_width, cf1, cf2, 60);
+		freq, (freq - 5000) / 5, chan_offset, chan_width, cf1, cf2,
+		iface->dfs_cac_ms / 1000);
 	iface->cac_started = 1;
+	os_get_reltime(&iface->dfs_cac_start);
 	return 0;
 }
 
